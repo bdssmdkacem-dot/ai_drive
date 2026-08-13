@@ -10,6 +10,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
+  # Provides GlobalMaterialLocalizations/GlobalWidgetsLocalizations.
+  # Required because the app declares Arabic and English locales.
+  flutter_localizations:
+    sdk: flutter
+
   cupertino_icons: ^1.0.8
   flutter_riverpod: ^2.6.1
   camera: ^0.11.2+1
