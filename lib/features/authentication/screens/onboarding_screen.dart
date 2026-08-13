@@ -110,7 +110,7 @@ class _PermissionRow extends StatelessWidget {
       child: Row(
         children: [
           CircleAvatar(
-            backgroundColor: AppTheme.primary.withOpacity(0.15),
+            backgroundColor: AppTheme.primary.withValues(alpha: 0.15),
             child: Icon(icon, color: AppTheme.primary),
           ),
           const SizedBox(width: 16),
