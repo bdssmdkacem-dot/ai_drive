@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../../core/themes/app_theme.dart';
@@ -27,10 +26,8 @@ enum _ViewMode { camera, synthetic }
 /// Object Tracking -> Distance/Closeness -> Collision Prediction ->
 /// Risk Assessment -> Voice Warning -> UI Update.
 ///
-/// It also tracks real trip stats via GPS (distance/avg/max speed — see
-/// GpsService/TripStatsAccumulator) and offers a "synthetic" view mode —
-/// a Tesla-style stylized scene (TeslaVisualizationView) built from the
-/// same detection data, as an alternative to the raw camera preview.
+/// It also tracks real trip stats via GPS and offers a synthetic Tesla-style
+/// visualization as an alternative to the raw camera preview.
 class LiveDrivingScreen extends StatefulWidget {
   const LiveDrivingScreen({super.key});
 
@@ -90,7 +87,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
 
   Future<void> _onFrame(CameraImage image) async {
     _frameCounter++;
-    if (_frameCounter % 2 != 0) return; // process every other frame
+    if (_frameCounter % 2 != 0) return;
     if (_busy) return;
     _busy = true;
 
@@ -144,7 +141,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
   Future<void> _handleLaneDrift(LanePosition position) async {
     final now = DateTime.now();
     final last = _lastLaneWarningSpokenAt;
-    // Don't spam spoken warnings more than once every 4s.
     if (last != null && now.difference(last).inSeconds < 4) return;
     _lastLaneWarningSpokenAt = now;
 
@@ -159,7 +155,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
   Future<void> _handleRisk(RiskAssessment risk) async {
     final now = DateTime.now();
     final last = _lastWarningSpokenAt;
-    // Don't spam spoken warnings more than once every 3s.
     if (last == null || now.difference(last).inSeconds >= 3) {
       _lastWarningSpokenAt = now;
       final phrase = risk.level == RiskLevel.danger
@@ -223,7 +218,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
         fit: StackFit.expand,
         children: [
           _buildMainView(controller),
-
           Positioned(
             top: 16,
             left: 16,
@@ -247,7 +241,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
               ),
             ),
           ),
-
           Positioned(
             bottom: 24,
             right: 20,
@@ -267,7 +260,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
               ),
             ),
           ),
-
           Positioned(
             bottom: 24,
             left: 0,
@@ -277,7 +269,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
                 backgroundColor: AppTheme.primary,
                 onPressed: () async {
                   final clip = await _recorder?.saveCurrentClip();
-                  if (clip != null && mounted) {
+                  if (clip != null && context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Clip saved')),
                     );
@@ -302,7 +294,7 @@ class _SpeedBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: AppTheme.surface.withOpacity(0.85),
+        color: AppTheme.surface.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Text(
@@ -333,7 +325,7 @@ class _LaneBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: AppTheme.surface.withOpacity(0.85),
+        color: AppTheme.surface.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: color, width: 1.5),
       ),
@@ -362,14 +354,14 @@ class _RiskBadge extends StatelessWidget {
     final (color, label) = switch (level) {
       RiskLevel.danger => (AppTheme.danger, 'DANGER'),
       RiskLevel.warning => (AppTheme.warning, 'WARNING'),
-      RiskLevel.caution => (AppTheme.warning.withOpacity(0.7), 'CAUTION'),
+      RiskLevel.caution => (AppTheme.warning.withValues(alpha: 0.7), 'CAUTION'),
       RiskLevel.none => (AppTheme.success, 'CLEAR'),
     };
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.9),
+        color: color.withValues(alpha: 0.9),
         borderRadius: BorderRadius.circular(24),
       ),
       child: Text(
