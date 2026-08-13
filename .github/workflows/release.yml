@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       track:
-        description: "Play Store track to publish to"
+        description: "Google Play track"
         required: false
         default: "internal"
         type: choice
@@ -21,19 +21,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ai-drive-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-release-bundle:
+  build-release:
+    name: Build Release AAB
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -41,24 +40,30 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Show Flutter Version
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter Version
         run: flutter --version
 
       - name: Create local.properties
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: flutter pub get
 
-      - name: Generate Isar code
+      - name: Generate Isar
         run: dart run build_runner build --delete-conflicting-outputs
 
-      - name: Decode upload keystore
+      - name: Decode Upload Keystore
         run: |
           echo "${{ secrets.UPLOAD_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
 
-      - name: Write key.properties
+      - name: Create key.properties
         run: |
           cat > android/key.properties <<EOF
           storePassword=${{ secrets.KEYSTORE_PASSWORD }}
@@ -70,17 +75,22 @@ jobs:
       - name: Build Release App Bundle
         env:
           MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_RELEASE }}
-        run: flutter build appbundle --release
+        run: |
+          flutter build appbundle --release
 
       - name: Upload Release Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: release-aab
+          name: ai-drive-release-aab
           path: build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
 
-# Uncomment after your first manual Play Store upload.
+# --------------------------------------------------------------------
+# OPTIONAL: Publish automatically to Google Play
+# Enable after your first manual upload to Play Console.
+# --------------------------------------------------------------------
 #
-#      - name: Publish to Play Store
+#      - name: Publish to Google Play
 #        uses: r0adkll/upload-google-play@v1
 #        with:
 #          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
