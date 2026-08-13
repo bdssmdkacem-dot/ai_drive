@@ -12,49 +12,37 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.8
-
-  # State Management
   flutter_riverpod: ^2.6.1
 
-  # Camera & Media
   camera: ^0.11.2+1
   video_player: ^2.10.0
   path_provider: ^2.1.5
   path: ^1.9.1
 
-  # Google ML Kit
   google_mlkit_object_detection: ^0.15.0
   google_mlkit_face_detection: ^0.13.1
   google_mlkit_commons: ^0.11.0
 
-  # Sensors
   sensors_plus: ^6.1.1
-
-  # GPS & Maps
   geolocator: ^13.0.4
   google_maps_flutter: ^2.12.3
 
-  # Voice
   speech_to_text: ^7.3.0
   flutter_tts: ^4.2.3
   url_launcher: ^6.3.2
 
-  # Database
-  # Pinned to the last real stable Isar 3.x release.
-  # Isar 3.1.8 does not exist as a stable release.
+  # Isar 3.1.0+1 is the last stable upstream Isar release.
+  # xxf_isar_flutter_libs contains the same Isar core binaries with
+  # the Android namespace fix required by modern Android Gradle Plugin.
   isar: ^3.1.0+1
-  isar_flutter_libs: ^3.1.0+1
+  xxf_isar_flutter_libs: ^3.1.0+3
 
   shared_preferences: ^2.5.3
   flutter_secure_storage: ^9.2.4
 
-  # Notifications
   flutter_local_notifications: ^19.4.0
-
-  # Permissions
   permission_handler: ^12.0.1
 
-  # Utilities
   intl: ^0.20.2
   share_plus: ^12.0.2
   wakelock_plus: ^1.4.0
@@ -65,16 +53,14 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-
   flutter_lints: ^6.0.0
 
-  # Compatible with isar_generator 3.1.0+1
+  # Compatible with isar_generator 3.1.0+1.
   build_runner: 2.4.13
   isar_generator: 3.1.0+1
 
 flutter:
   uses-material-design: true
-
   assets:
     - assets/images/
     - assets/icons/
