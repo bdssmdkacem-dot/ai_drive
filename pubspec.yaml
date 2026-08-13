@@ -5,7 +5,6 @@ publish_to: "none"
 version: 1.0.0+1
 
 environment:
-
   sdk: ">=3.11.5 <4.0.0"
 
 dependencies:
@@ -41,11 +40,8 @@ dependencies:
   url_launcher: ^6.3.2
 
   # Database
-  # NOTE: the original isar package hasn't had a stable release past
-  # 3.1.0+1 in ~3 years (there's only a 4.0.0-dev prerelease beyond it) —
-  # 3.1.8 doesn't exist and never did. Pinned to the last real release.
-  # Consider migrating to the actively-maintained `isar_community` fork
-  # before shipping to Play Store; see the note in dev_dependencies below.
+  # Pinned to the last real stable Isar 3.x release.
+  # Isar 3.1.8 does not exist as a stable release.
   isar: ^3.1.0+1
   isar_flutter_libs: ^3.1.0+1
 
@@ -71,6 +67,8 @@ dev_dependencies:
     sdk: flutter
 
   flutter_lints: ^6.0.0
+
+  # Compatible with isar_generator 3.1.0+1
   build_runner: 2.4.13
   isar_generator: 3.1.0+1
 

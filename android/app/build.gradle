@@ -31,8 +31,9 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
-        // Required by flutter_local_notifications v10+ (we're on 19.x) for
-        // its scheduled-notification support on older Android API levels.
+
+        // Required by flutter_local_notifications v19.x
+        // for scheduled notification support.
         coreLibraryDesugaringEnabled true
     }
 
@@ -46,18 +47,20 @@ android {
 
     defaultConfig {
         applicationId "com.comptaflow.aidrive"
-        minSdkVersion 26 // ML Kit + CameraX-adjacent APIs need API 26+
+        minSdkVersion 26
         targetSdkVersion 34
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
 
-        // Resolved from (in order of precedence): -PMAPS_API_KEY, the
-        // MAPS_API_KEY env var (set as a GitHub Actions secret in CI), or
-        // android/local.properties's maps.apiKey for local builds.
+        // Resolved from:
+        // 1. -PMAPS_API_KEY
+        // 2. MAPS_API_KEY environment variable
+        // 3. android/local.properties maps.apiKey
         def mapsApiKey = project.hasProperty("MAPS_API_KEY")
             ? project.property("MAPS_API_KEY")
             : (System.getenv("MAPS_API_KEY") ?: localProperties.getProperty("maps.apiKey", ""))
+
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
     }
 
@@ -66,7 +69,9 @@ android {
             if (keystorePropertiesFile.exists()) {
                 keyAlias keystoreProperties["keyAlias"]
                 keyPassword keystoreProperties["keyPassword"]
-                storeFile keystoreProperties["storeFile"] ? file(keystoreProperties["storeFile"]) : null
+                storeFile keystoreProperties["storeFile"]
+                    ? file(keystoreProperties["storeFile"])
+                    : null
                 storePassword keystoreProperties["storePassword"]
             }
         }
@@ -74,10 +79,17 @@ android {
 
     buildTypes {
         release {
-            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
+            signingConfig keystorePropertiesFile.exists()
+                ? signingConfigs.release
+                : signingConfigs.debug
+
             minifyEnabled true
             shrinkResources true
-            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }
@@ -89,10 +101,9 @@ flutter {
 dependencies {
     implementation "androidx.multidex:multidex:2.0.1"
 
-    // Android Auto (phone-projected car screen) — see docs/ANDROID_AUTO.md
-    // for what's implemented vs. stubbed in this v1 foundation.
+    // Android Auto (phone-projected car screen).
     implementation "androidx.car.app:app:1.4.0"
 
-    // Required alongside coreLibraryDesugaringEnabled above.
+    // Required by coreLibraryDesugaringEnabled above.
     coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"
 }
