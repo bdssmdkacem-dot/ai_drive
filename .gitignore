@@ -1,0 +1,36 @@
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+*.g.dart.bak
+
+# Android
+android/local.properties
+android/key.properties
+android/**/*.jks
+android/**/*.keystore
+android/.gradle/
+android/captures/
+android/app/release/
+*.iml
+.idea/
+
+# iOS (not a v1 target platform but keep ignore rules for parity)
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+
+# Secrets
+**/google-services.json
+**/GoogleService-Info.plist
+*.env
+
+# IDE / OS
+.vscode/
+.DS_Store
+Thumbs.db

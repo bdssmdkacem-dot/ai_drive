@@ -1,0 +1,97 @@
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+
+/// Voice command + spoken-warning layer.
+///
+/// v1 note: always-on "Hey Drive" hotword detection requires a dedicated
+/// wake-word engine (e.g. Picovoice Porcupine) running continuously in the
+/// background, which needs a native platform integration and its own
+/// license/model file. For the offline MVP, listening is started by a
+/// tap-to-talk button (mic icon / steering-wheel-style control) instead of
+/// a hotword. Swapping in real wake-word detection is a drop-in follow-up
+/// once a wake-word engine is licensed — see docs/AI.md.
+class VoiceAssistantService {
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  final FlutterTts _tts = FlutterTts();
+
+  bool _initialized = false;
+
+  Future<bool> init() async {
+    if (_initialized) return true;
+    _initialized = await _speech.initialize();
+    await _tts.setLanguage('ar-SA');
+    await _tts.setSpeechRate(0.48);
+    return _initialized;
+  }
+
+  bool get isListening => _speech.isListening;
+
+  Future<void> startListening({
+    required void Function(String command) onCommand,
+  }) async {
+    if (!_initialized) await init();
+    await _speech.listen(
+      onResult: (result) {
+        if (result.finalResult) {
+          onCommand(result.recognizedWords.trim());
+        }
+      },
+      localeId: 'ar-SA',
+    );
+  }
+
+  Future<void> stopListening() async {
+    await _speech.stop();
+  }
+
+  /// Speaks a warning/response. Warnings should be short — a driver needs
+  /// the phrase, not a paragraph.
+  Future<void> speak(String text) async {
+    await _tts.stop();
+    await _tts.speak(text);
+  }
+}
+
+/// Maps free-text recognized speech to app intents. Kept separate from
+/// [VoiceAssistantService] so the command grammar can be unit tested
+/// without a real speech engine.
+enum VoiceIntent {
+  navigateHome,
+  navigateWork,
+  callContact,
+  nearestGasStation,
+  nearestParking,
+  cancelRoute,
+  recordVideo,
+  saveClip,
+  startParkingMode,
+  stopRecording,
+  unknown,
+}
+
+class VoiceCommandParser {
+  static VoiceIntent parse(String text) {
+    final t = text.toLowerCase();
+
+    bool has(List<String> phrases) => phrases.any((p) => t.contains(p));
+
+    if (has(['home', 'البيت', 'المنزل'])) return VoiceIntent.navigateHome;
+    if (has(['work', 'العمل', 'الشغل'])) return VoiceIntent.navigateWork;
+    if (has(['call', 'اتصل'])) return VoiceIntent.callContact;
+    if (has(['gas', 'fuel', 'بنزين', 'محطة وقود'])) {
+      return VoiceIntent.nearestGasStation;
+    }
+    if (has(['parking', 'موقف', 'باركينج'])) {
+      return VoiceIntent.nearestParking;
+    }
+    if (has(['cancel', 'إلغاء', 'الغاء'])) return VoiceIntent.cancelRoute;
+    if (has(['record', 'سجل', 'تسجيل'])) return VoiceIntent.recordVideo;
+    if (has(['save', 'clip', 'احفظ'])) return VoiceIntent.saveClip;
+    if (has(['start parking', 'وضع الوقوف'])) {
+      return VoiceIntent.startParkingMode;
+    }
+    if (has(['stop', 'أوقف', 'ايقاف'])) return VoiceIntent.stopRecording;
+
+    return VoiceIntent.unknown;
+  }
+}

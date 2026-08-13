@@ -1,0 +1,18 @@
+AI Drive Assistant turns your phone into a smart co-pilot — entirely on your device, with no account and no cloud upload.
+
+FEATURES
+• Collision warnings — detects vehicles and pedestrians ahead and warns you when they're closing in fast
+• Driver monitoring — the front camera watches for drowsiness, eyes-closed, and looking-away moments and speaks up before it's a problem
+• Dashcam — continuous loop recording, manual clip saving, and automatic emergency clip protection
+• Parking mode — detects impacts while your car is parked and saves a clip automatically, with a push notification
+• Voice assistant — hands-free commands in Arabic and English (navigate home/work, record, save a clip, and more)
+• Navigation — turn-by-turn directions with live traffic
+• Trip history — distance, speed, and safety events for every drive
+
+PRIVACY FIRST
+All AI processing (object detection, driver monitoring) runs locally on your phone. Your camera footage and driving data are never uploaded to a server. See our privacy policy for details.
+
+Built for Arabic-speaking drivers, with full right-to-left support and Arabic voice guidance.
+
+DISCLAIMER
+AI Drive Assistant is a driving aid, not a certified safety system. It does not replace attentive driving. Always keep your eyes on the road and follow local traffic laws.
