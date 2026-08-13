@@ -66,8 +66,14 @@ class VoiceCommandParser {
 
     bool has(List<String> phrases) => phrases.any((p) => t.contains(p));
 
-    if (has(['home', 'البيت', 'المنزل'])) return VoiceIntent.navigateHome;
-    if (has(['work', 'العمل', 'الشغل'])) return VoiceIntent.navigateWork;
+    // Include common Arabic preposition/article forms such as "للبيت"
+    // in addition to the standalone "البيت".
+    if (has(['home', 'البيت', 'للبيت', 'المنزل', 'للمنزل'])) {
+      return VoiceIntent.navigateHome;
+    }
+    if (has(['work', 'العمل', 'للعمل', 'الشغل'])) {
+      return VoiceIntent.navigateWork;
+    }
     if (has(['call', 'اتصل'])) return VoiceIntent.callContact;
     if (has(['gas', 'fuel', 'بنزين', 'محطة وقود'])) {
       return VoiceIntent.nearestGasStation;
