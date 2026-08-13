@@ -1,0 +1,80 @@
+name: Release
+
+# Triggers on version tags, e.g. v1.0.0 — push a tag to build a signed,
+# Play-Store-ready App Bundle.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Play Store track to publish to"
+        required: false
+        default: "internal"
+        type: choice
+        options: [internal, alpha, beta, production]
+
+jobs:
+  build-release-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.x"
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Generate Isar code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # --- Recreate the signing keystore from a base64 CI secret ---
+      # Store the base64 output of:  base64 -i upload-keystore.jks
+      # as the UPLOAD_KEYSTORE_BASE64 repository secret.
+      - name: Decode upload keystore
+        run: echo "${{ secrets.UPLOAD_KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-keystore.jks
+
+      - name: Write key.properties
+        run: |
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=upload-keystore.jks
+          EOF
+
+      - name: Build App Bundle
+        run: flutter build appbundle --release
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_RELEASE }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+
+      # --- Optional: publish straight to Play Console ---
+      # Requires a Google Play service-account JSON stored as the
+      # PLAY_SERVICE_ACCOUNT_JSON secret, with "Release manager" access
+      # granted in Play Console > Users & permissions. Uncomment once the
+      # app has completed its first *manual* upload (Play Console requires
+      # at least one manual release before the API can publish).
+      #
+      # - name: Publish to Play Store
+      #   uses: r0adkll/upload-google-play@v1
+      #   with:
+      #     serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+      #     packageName: com.comptaflow.aidrive
+      #     releaseFiles: build/app/outputs/bundle/release/app-release.aab
+      #     track: ${{ github.event.inputs.track || 'internal' }}
+      #     status: completed

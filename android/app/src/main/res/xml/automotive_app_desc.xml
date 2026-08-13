@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<automotiveApp>
+    <!--
+      Declares this as a "navigation"-adjacent app for Android Auto's
+      Car App Library. We don't render turn-by-turn on the car screen
+      ourselves (see MainCarScreen.kt) — actions hand off to the device's
+      default maps app. If Google Play review requires a stricter
+      category for your actual feature set, revisit this before
+      submission; see docs/ANDROID_AUTO.md.
+    -->
+    <uses name="poi" />
+</automotiveApp>
