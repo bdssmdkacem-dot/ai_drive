@@ -15,8 +15,6 @@ if (localPropertiesFile.exists()) {
 def flutterVersionCode = localProperties.getProperty("flutter.versionCode") ?: "1"
 def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "1.0.0"
 
-// Release signing is loaded from key.properties, which is git-ignored.
-// See docs/PLAY_STORE_DEPLOYMENT.md for how to generate your upload key.
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
@@ -25,15 +23,12 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace "com.comptaflow.aidrive"
-    compileSdk 34
+    compileSdk 36
     ndkVersion flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
-
-        // Required by flutter_local_notifications v19.x
-        // for scheduled notification support.
         coreLibraryDesugaringEnabled true
     }
 
@@ -48,15 +43,11 @@ android {
     defaultConfig {
         applicationId "com.comptaflow.aidrive"
         minSdkVersion 26
-        targetSdkVersion 34
+        targetSdkVersion 36
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
 
-        // Resolved from:
-        // 1. -PMAPS_API_KEY
-        // 2. MAPS_API_KEY environment variable
-        // 3. android/local.properties maps.apiKey
         def mapsApiKey = project.hasProperty("MAPS_API_KEY")
             ? project.property("MAPS_API_KEY")
             : (System.getenv("MAPS_API_KEY") ?: localProperties.getProperty("maps.apiKey", ""))
@@ -82,10 +73,8 @@ android {
             signingConfig keystorePropertiesFile.exists()
                 ? signingConfigs.release
                 : signingConfigs.debug
-
             minifyEnabled true
             shrinkResources true
-
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -100,10 +89,6 @@ flutter {
 
 dependencies {
     implementation "androidx.multidex:multidex:2.0.1"
-
-    // Android Auto (phone-projected car screen).
     implementation "androidx.car.app:app:1.4.0"
-
-    // Required by coreLibraryDesugaringEnabled above.
     coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"
 }
