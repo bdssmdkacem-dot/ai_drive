@@ -107,7 +107,7 @@ class _DriverMonitorScreenState extends State<DriverMonitorScreen> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(20),
-            color: _alertColor(_alert).withOpacity(0.15),
+            color: _alertColor(_alert).withValues(alpha: 0.15),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
