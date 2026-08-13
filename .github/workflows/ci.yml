@@ -22,6 +22,7 @@ concurrency:
 
 env:
   FLUTTER_VERSION: "3.41.9"
+  GRADLE_VERSION: "8.6"
 
 jobs:
   analyze-and-test:
@@ -84,12 +85,25 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
       - name: Flutter Version
         run: flutter --version
 
       - name: Create local.properties
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Regenerate Gradle Wrapper
+        working-directory: android
+        run: gradle wrapper --gradle-version ${{ env.GRADLE_VERSION }} --distribution-type all
+
+      - name: Verify Gradle Wrapper
+        working-directory: android
+        run: ./gradlew --version
 
       - name: Install Dependencies
         run: flutter pub get
