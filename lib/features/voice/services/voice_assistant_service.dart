@@ -62,7 +62,7 @@ enum VoiceIntent {
 
 class VoiceCommandParser {
   static VoiceIntent parse(String text) {
-    final t = text.toLowerCase();
+    final t = text.toLowerCase().trim();
 
     bool has(List<String> phrases) => phrases.any((p) => t.contains(p));
 
