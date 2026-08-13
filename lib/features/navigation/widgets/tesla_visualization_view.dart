@@ -5,19 +5,6 @@ import '../../ai/models/tracked_object.dart';
 import '../../ai/services/collision_prediction_service.dart';
 import '../../lane_detection/services/lane_detection_service.dart';
 
-/// A stylized, synthetic top-down/perspective driving scene in the style
-/// of Tesla's in-car visualization: the road, lane lines, and nearby
-/// vehicles/pedestrians are drawn as abstract shapes positioned from the
-/// AI pipeline's output, rather than showing the raw camera feed.
-///
-/// Honest scope note (see docs/AI.md): this is a 2.5D pseudo-perspective
-/// illustration built with 2D canvas drawing (`CustomPainter`) — converging
-/// lines and size-scaling-by-distance create a 3D impression, but there's
-/// no real 3D scene graph, camera projection matrix, or depth buffer like
-/// Tesla's actual (Unreal-Engine-based) visualization. Object lateral
-/// position comes from where each detection sits in the camera frame;
-/// "distance" is the same closeness-score proxy used elsewhere in the
-/// app (bounding-box size), not calibrated metric depth.
 class TeslaVisualizationView extends StatelessWidget {
   const TeslaVisualizationView({
     super.key,
@@ -87,9 +74,6 @@ class _ScenePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Background: dark "road at night" gradient regardless of actual
-    // time of day — deliberate stylization, matching Tesla's UI, rather
-    // than an attempt at realism.
     final bgPaint = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter,
@@ -117,15 +101,10 @@ class _ScenePainter extends CustomPainter {
       ..lineTo(size.width / 2 + roadWidthAtBottom / 2, roadBottomY)
       ..lineTo(size.width / 2 - roadWidthAtBottom / 2, roadBottomY)
       ..close();
-    canvas.drawPath(
-      path,
-      Paint()..color = const Color(0xFF1B222B),
-    );
+    canvas.drawPath(path, Paint()..color = const Color(0xFF1B222B));
   }
 
   void _drawLaneLines(Canvas canvas, Size size, Offset vp, double roadBottomY) {
-    // Fall back to a plausible symmetric lane if we don't have a confident
-    // detection this frame, so the scene doesn't flicker to "no road".
     final leftNorm = laneReading?.leftLineX ?? 0.3;
     final rightNorm = laneReading?.rightLineX ?? 0.7;
 
@@ -133,16 +112,17 @@ class _ScenePainter extends CustomPainter {
     final rightBottomX = rightNorm * size.width;
 
     final paint = Paint()
-      ..color = laneReading != null ? AppTheme.primary : AppTheme.textSecondary.withOpacity(0.4)
+      ..color = laneReading != null
+          ? AppTheme.primary
+          : AppTheme.textSecondary.withValues(alpha: 0.4)
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
 
     canvas.drawLine(vp, Offset(leftBottomX, roadBottomY), paint);
     canvas.drawLine(vp, Offset(rightBottomX, roadBottomY), paint);
 
-    // Center dashed line for visual reference.
     final dashPaint = Paint()
-      ..color = Colors.white.withOpacity(0.25)
+      ..color = Colors.white.withValues(alpha: 0.25)
       ..strokeWidth = 2;
     const dashCount = 6;
     for (int i = 0; i < dashCount; i++) {
@@ -165,13 +145,12 @@ class _ScenePainter extends CustomPainter {
       const Radius.circular(10),
     );
     canvas.drawRRect(rect, Paint()..color = AppTheme.primary);
-    // windshield accent
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromCenter(center: Offset(cx, bottom - h * 0.68), width: w * 0.6, height: h * 0.3),
         const Radius.circular(6),
       ),
-      Paint()..color = AppTheme.background.withOpacity(0.6),
+      Paint()..color = AppTheme.background.withValues(alpha: 0.6),
     );
   }
 
@@ -182,16 +161,8 @@ class _ScenePainter extends CustomPainter {
     double roadBottomY,
     TrackedObject obj,
   ) {
-    // Lateral position: where the object's bounding-box center sits
-    // within the camera frame, mapped to the same 0..1 space as the road.
     final boxCenterXNorm =
         (obj.boundingBox.left + obj.boundingBox.width / 2) / obj.frameWidth;
-
-    // "Depth": closer objects (higher closenessScore) sit lower on screen
-    // (closer to the ego vehicle) and render larger; farther objects sit
-    // nearer the vanishing point and render smaller. This is the same
-    // proxy used for collision prediction elsewhere — not calibrated
-    // metric distance.
     final depthT = (1.0 - obj.closenessScore).clamp(0.05, 0.95);
 
     final screenPos = Offset.lerp(
@@ -219,10 +190,7 @@ class _ScenePainter extends CustomPainter {
 
     if (isRiskObject) {
       canvas.drawRRect(
-        RRect.fromRectAndRadius(
-          rect.inflate(4),
-          Radius.circular(w * 0.25),
-        ),
+        RRect.fromRectAndRadius(rect.inflate(4), Radius.circular(w * 0.25)),
         Paint()
           ..color = color
           ..style = PaintingStyle.stroke
