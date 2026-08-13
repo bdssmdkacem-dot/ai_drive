@@ -40,7 +40,7 @@ class _TripsScreenState extends State<TripsScreen> {
         return ListView.separated(
           padding: const EdgeInsets.all(16),
           itemCount: trips.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 8),
+          separatorBuilder: (_, _) => const SizedBox(height: 8),
           itemBuilder: (context, i) {
             final trip = trips[i];
             return Card(
@@ -54,7 +54,7 @@ class _TripsScreenState extends State<TripsScreen> {
                 trailing: trip.collisionWarningCount > 0
                     ? Chip(
                         label: Text('${trip.collisionWarningCount} warnings'),
-                        backgroundColor: AppTheme.warning.withOpacity(0.2),
+                        backgroundColor: AppTheme.warning.withValues(alpha: 0.2),
                       )
                     : null,
               ),
