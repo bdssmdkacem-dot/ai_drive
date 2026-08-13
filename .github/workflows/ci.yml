@@ -5,12 +5,10 @@ on:
     branches:
       - main
       - develop
-
   pull_request:
     branches:
       - main
       - develop
-
   workflow_dispatch:
 
 permissions:
@@ -22,46 +20,37 @@ concurrency:
 
 env:
   FLUTTER_VERSION: "3.41.9"
-  GRADLE_VERSION: "8.6"
+  GRADLE_VERSION: "8.7"
 
 jobs:
   analyze-and-test:
     name: Analyze & Test
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-
       - name: Flutter Version
         run: flutter --version
-
       - name: Create local.properties
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
           echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
-
       - name: Install Dependencies
         run: flutter pub get
-
       - name: Generate Isar
         run: dart run build_runner build --delete-conflicting-outputs
-
       - name: Analyze
         run: flutter analyze
-
       - name: Run Tests
         run: flutter test
 
@@ -69,55 +58,43 @@ jobs:
     name: Build Debug APK
     needs: analyze-and-test
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
-
       - name: Flutter Version
         run: flutter --version
-
       - name: Create local.properties
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
           echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
-
       - name: Regenerate Gradle Wrapper
         working-directory: android
         run: gradle wrapper --gradle-version ${{ env.GRADLE_VERSION }} --distribution-type all
-
       - name: Verify Gradle Wrapper
         working-directory: android
         run: ./gradlew --version
-
       - name: Install Dependencies
         run: flutter pub get
-
       - name: Generate Isar
         run: dart run build_runner build --delete-conflicting-outputs
-
       - name: Build Debug APK
         env:
           MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_DEBUG }}
         run: flutter build apk --debug
-
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
