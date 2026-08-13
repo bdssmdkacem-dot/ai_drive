@@ -2,63 +2,107 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
+
   pull_request:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-drive-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze-and-test:
+    name: Analyze & Test
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: subosito/flutter-action@v2
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
-          flutter-version: "3.24.x"
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
           channel: stable
           cache: true
 
-      - name: Install dependencies
+      - name: Flutter Version
+        run: flutter --version
+
+      - name: Create local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Install Dependencies
         run: flutter pub get
 
-      - name: Generate Isar code
+      - name: Generate Isar
         run: dart run build_runner build --delete-conflicting-outputs
 
       - name: Analyze
         run: flutter analyze
 
-      - name: Run tests
+      - name: Run Tests
         run: flutter test
 
   build-debug-apk:
+    name: Build Debug APK
     needs: analyze-and-test
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.24.x"
-          channel: stable
-          cache: true
-
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Install dependencies
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter Version
+        run: flutter --version
+
+      - name: Create local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Install Dependencies
         run: flutter pub get
 
-      - name: Generate Isar code
+      - name: Generate Isar
         run: dart run build_runner build --delete-conflicting-outputs
 
-      - name: Build debug APK
-        run: flutter build apk --debug
+      - name: Build Debug APK
         env:
           MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_DEBUG }}
+        run: |
+          flutter build apk --debug
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
         with:
-          name: debug-apk
+          name: ai-drive-debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
