@@ -20,7 +20,6 @@ class NavigationScreen extends StatefulWidget {
 }
 
 class _NavigationScreenState extends State<NavigationScreen> {
-  GoogleMapController? _mapController;
   LatLng? _current;
   final _voice = VoiceAssistantService();
 
@@ -80,7 +79,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
     }
   }
 
-  Future<void> _navigateToSavedAddress(String prefKey, String spokenLabel) async {
+  Future<void> _navigateToSavedAddress(
+    String prefKey,
+    String spokenLabel,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
     final address = prefs.getString(prefKey);
     if (address == null || address.trim().isEmpty) {
@@ -110,7 +112,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
           myLocationEnabled: true,
           myLocationButtonEnabled: true,
           zoomControlsEnabled: false,
-          onMapCreated: (c) => _mapController = c,
         ),
         Positioned(
           right: 16,
