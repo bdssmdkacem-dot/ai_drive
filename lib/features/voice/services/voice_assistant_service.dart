@@ -32,7 +32,7 @@ class VoiceAssistantService {
           onCommand(result.recognizedWords.trim());
         }
       },
-      options: const stt.SpeechListenOptions(localeId: 'ar-SA'),
+      listenOptions: stt.SpeechListenOptions(localeId: 'ar-SA'),
     );
   }
 
