@@ -1,4 +1,3 @@
-import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import '../../../core/constants/app_constants.dart';
@@ -13,7 +12,7 @@ class DriverMonitorService {
   DriverMonitorService() {
     _detector = FaceDetector(
       options: FaceDetectorOptions(
-        enableClassification: true, // gives eye-open probabilities
+        enableClassification: true,
         enableTracking: true,
         performanceMode: FaceDetectorMode.fast,
       ),
@@ -53,7 +52,7 @@ class DriverMonitorService {
       return DriverAlertResult(DriverAlertType.eyesClosed, leftOpen, rightOpen);
     }
 
-    final yaw = face.headEulerAngleY; // left/right head turn
+    final yaw = face.headEulerAngleY;
     if (yaw != null && yaw.abs() > AppConstants.lookingAwayYawThresholdDegrees) {
       return DriverAlertResult(DriverAlertType.lookingAway, leftOpen, rightOpen);
     }
