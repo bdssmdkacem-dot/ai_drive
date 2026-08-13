@@ -1,4 +1,4 @@
-import 'package:google_mlkit_object_detection/google_mlkit_object_detection.dart';
+
 
 import '../../ai/models/tracked_object.dart';
 
