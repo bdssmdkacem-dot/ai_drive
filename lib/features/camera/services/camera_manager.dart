@@ -33,9 +33,17 @@ class CameraManager {
     }
   }
 
+  /// Initializes the rear (road-facing) camera controller. Does NOT start
+  /// an image stream here — if you need AI frames from this camera, they
+  /// must come through [DashcamRecorderService]'s `startLoopRecording`
+  /// (which uses `CameraController.startVideoRecording(onAvailable: ...)`,
+  /// the only combination the `camera` plugin supports for simultaneous
+  /// recording + frame streaming on one controller). Calling
+  /// `startImageStream()` here AND `startVideoRecording()` separately
+  /// elsewhere silently breaks frame delivery once recording starts — see
+  /// docs/AI.md's "Concurrent camera streaming + recording" note.
   Future<CameraController> startRoadCamera({
     ResolutionPreset resolution = ResolutionPreset.high,
-    void Function(CameraImage image)? onFrame,
   }) async {
     final desc = _rearCamera;
     if (desc == null) {
@@ -49,9 +57,6 @@ class CameraManager {
       imageFormatGroup: ImageFormatGroup.nv21,
     );
     await controller.initialize();
-    if (onFrame != null) {
-      await controller.startImageStream(onFrame);
-    }
     roadController = controller;
     return controller;
   }

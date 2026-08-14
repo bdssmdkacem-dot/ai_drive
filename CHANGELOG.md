@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Tesla view: perspective-skewed objects + crossfade transition.**
+  Object boxes now lean toward the vanishing point (via a `Matrix4.skewX`
+  canvas transform) instead of floating as flat axis-aligned rectangles —
+  consistent with the already-converging road/lane lines. Switching
+  between camera and synthetic view modes now crossfades via
+  `AnimatedSwitcher` instead of a hard cut.
+- **Tesla view: orientation support + motion smoothing.** The synthetic
+  visualization's proportions now adapt to portrait vs. landscape (was
+  tuned only for portrait — looked squashed/wrong when rotated). Object
+  positions are now smoothed frame-to-frame via a continuous ticker
+  instead of snapping directly to each new detection, plus flowing lane
+  dashes and ground-contact shadows for a more fluid feel. Camera-preview
+  mode is now wrapped to crop-to-fill instead of stretching when rotated.
+
+### Fixed
+- **Confirmed on a real device: Live Driving ran with no crash, but
+  collision/lane-drift alerts never fired.** Root cause:
+  `controller.startImageStream()` (for AI frames) and a separate plain
+  `controller.startVideoRecording()` (for the dashcam) were both called
+  on the same `CameraController` — an unsupported combination that
+  silently stops frame delivery once recording starts, with no exception
+  thrown. Fixed by using `startVideoRecording(onAvailable: callback)`,
+  the plugin's actual supported path for simultaneous recording + frame
+  streaming. See `docs/AI.md` item 7 for the full explanation.
+
 ### Fixed
 - **Trip stats were hardcoded to zero** — `LiveDrivingScreen.dispose()`
   always called `endTrip(distanceKm: 0, avgSpeedKmh: 0, maxSpeedKmh: 0)`

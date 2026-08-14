@@ -23,6 +23,17 @@ enum RecordingMode { off, loop, manual, emergency }
 /// ever track a segment in [_segments] *after* it's been written — never a
 /// path we guessed in advance — otherwise pruning/deletion targets files
 /// that don't exist while real segments leak and are never cleaned up.
+///
+/// AI frame delivery while recording: if a caller (e.g. LiveDrivingScreen)
+/// needs camera frames for AI processing *while also* recording video,
+/// that callback MUST be passed in via [startLoopRecording]'s `onFrame`
+/// and threaded through `CameraController.startVideoRecording(onAvailable:
+/// ...)` — the only combination the `camera` plugin supports for
+/// simultaneous recording + frame streaming on one controller. A separate
+/// `controller.startImageStream()` call alongside plain
+/// `startVideoRecording()` (no onAvailable) silently breaks frame
+/// delivery once recording starts, with no exception thrown — see
+/// docs/AI.md.
 class DashcamRecorderService {
   DashcamRecorderService(this._controller);
 
@@ -30,6 +41,11 @@ class DashcamRecorderService {
   Timer? _segmentTimer;
   RecordingMode _mode = RecordingMode.off;
   final List<File> _segments = [];
+
+  /// Stored so every internal restart (segment rotation, resuming after a
+  /// saved clip) keeps delivering frames to the same callback without the
+  /// caller having to re-supply it each time.
+  void Function(CameraImage image)? _onFrame;
 
   RecordingMode get mode => _mode;
   List<File> get segments => List.unmodifiable(_segments);
@@ -41,11 +57,16 @@ class DashcamRecorderService {
     return dir;
   }
 
-  Future<void> startLoopRecording() async {
+  /// Starts continuous loop recording. Pass [onFrame] if the caller also
+  /// needs AI-pipeline access to camera frames during recording (e.g. the
+  /// Live Driving screen) — leave it null for plain dashcam recording with
+  /// no frame processing (e.g. the standalone Dashcam screen).
+  Future<void> startLoopRecording({void Function(CameraImage image)? onFrame}) async {
     if (_mode == RecordingMode.loop) return;
     _mode = RecordingMode.loop;
+    _onFrame = onFrame;
     await _dashcamDir(); // ensure storage dir exists
-    await _controller.startVideoRecording();
+    await _controller.startVideoRecording(onAvailable: _onFrame);
     _segmentTimer = Timer.periodic(
       Duration(minutes: AppConstants.dashcamLoopSegmentMinutes),
       (_) => _rotateSegment(),
@@ -61,16 +82,18 @@ class DashcamRecorderService {
       await _pruneOldSegments();
     }
     _mode = RecordingMode.off;
+    _onFrame = null;
   }
 
   /// Stops the current segment and keeps it permanently (excluded from
-  /// loop pruning), then immediately resumes loop recording. Used for
-  /// manual "Save Clip" and voice-triggered saves.
+  /// loop pruning), then immediately resumes loop recording (and frame
+  /// delivery, if it was active). Used for manual "Save Clip" and
+  /// voice-triggered saves.
   Future<File?> saveCurrentClip() async {
     if (!_controller.value.isRecordingVideo) return null;
     final xfile = await _controller.stopVideoRecording();
     final saved = File(xfile.path);
-    await _controller.startVideoRecording(); // resume loop immediately
+    await _controller.startVideoRecording(onAvailable: _onFrame); // resume immediately
     return saved;
   }
 
@@ -83,7 +106,7 @@ class DashcamRecorderService {
     final xfile = await _controller.stopVideoRecording();
     _segments.add(File(xfile.path));
     await _pruneOldSegments();
-    await _controller.startVideoRecording();
+    await _controller.startVideoRecording(onAvailable: _onFrame);
   }
 
   Future<void> _pruneOldSegments() async {

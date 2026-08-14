@@ -76,11 +76,14 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
       });
     }
 
-    final controller = await CameraManager.instance.startRoadCamera(
-      onFrame: _onFrame,
-    );
+    final controller = await CameraManager.instance.startRoadCamera();
     _recorder = DashcamRecorderService(controller);
-    await _recorder!.startLoopRecording();
+    // Frame delivery for the AI pipeline happens through the recorder's
+    // onFrame here — NOT a separate controller.startImageStream() call —
+    // because startVideoRecording(onAvailable:) is the only combination
+    // the camera plugin supports for simultaneous recording + streaming
+    // on one controller. See DashcamRecorderService's doc comment.
+    await _recorder!.startLoopRecording(onFrame: _onFrame);
 
     if (mounted) setState(() => _controller = controller);
   }
@@ -204,7 +207,31 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
       );
     }
     if (controller != null && controller.value.isInitialized) {
-      return CameraPreview(controller);
+      // Fill the screen without distorting the image in either
+      // orientation: the camera's native aspect ratio rarely matches the
+      // screen's, so a bare CameraPreview stretches noticeably when you
+      // rotate the phone. This crops to fill instead (letterbox-free),
+      // which is the standard approach for full-screen camera UIs.
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final screenAspect = constraints.maxWidth / constraints.maxHeight;
+          final cameraAspect = controller.value.aspectRatio;
+          final scale = screenAspect < cameraAspect
+              ? constraints.maxHeight / (constraints.maxWidth / cameraAspect)
+              : constraints.maxWidth / (constraints.maxHeight * cameraAspect);
+          return ClipRect(
+            child: Transform.scale(
+              scale: scale,
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: cameraAspect,
+                  child: CameraPreview(controller),
+                ),
+              ),
+            ),
+          );
+        },
+      );
     }
     return const Center(child: CircularProgressIndicator(color: AppTheme.primary));
   }
@@ -217,7 +244,13 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          _buildMainView(controller),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            child: KeyedSubtree(
+              key: ValueKey(_viewMode),
+              child: _buildMainView(controller),
+            ),
+          ),
           Positioned(
             top: 16,
             left: 16,

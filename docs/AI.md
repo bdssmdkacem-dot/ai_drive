@@ -31,14 +31,31 @@ architecture doc's feature list is fully implemented.
   — a stylized driving scene built with `CustomPainter`, toggleable
   alongside the raw camera preview in `LiveDrivingScreen`. Honest scope:
   this is 2D canvas drawing with perspective tricks (converging lines,
-  size-by-distance), not a real 3D engine/scene graph like Tesla's actual
-  UI. Object positions come from the same detection/tracking data used
-  for collision warnings — lateral position from where each detection
-  sits in the camera frame, "distance" from the same bounding-box-size
-  proxy used elsewhere (not calibrated depth). Lane lines are drawn from
-  `LaneDetectionService`'s actual detected peak positions when available,
-  falling back to a plausible symmetric lane when the current frame has
-  no confident reading (so the scene doesn't flicker to "no road").
+  size-by-distance, ground-contact shadows), not a real 3D engine/scene
+  graph like Tesla's actual UI. Object positions come from the same
+  detection/tracking data used for collision warnings — lateral position
+  from where each detection sits in the camera frame, "distance" from the
+  same bounding-box-size proxy used elsewhere (not calibrated depth). Lane
+  lines are drawn from `LaneDetectionService`'s actual detected peak
+  positions when available, falling back to a plausible symmetric lane
+  when the current frame has no confident reading (so the scene doesn't
+  flicker to "no road"). Object motion is smoothed frame-to-frame (an
+  exponential blend toward each new detection, driven by a continuous
+  60fps ticker) rather than snapping directly to raw detection output,
+  since the AI pipeline only produces a new reading every other camera
+  frame — unsmoothed, that reads as jittery rather than fluid. Object
+  boxes are also perspective-skewed (via `Canvas.transform`/
+  `Matrix4.skewX`) based on lateral offset and depth, so they lean toward
+  the vanishing point consistent with the converging road/lane lines
+  instead of floating as flat axis-aligned rectangles. The scene's
+  proportions (vanishing point height, road width) and the speed
+  readout's position adapt to portrait vs. landscape via the widget's own
+  aspect ratio at paint time — there's no orientation lock anywhere in
+  the app, so this needed to hold up in both without distortion. The
+  camera-preview view mode is similarly wrapped to crop-to-fill rather
+  than stretch when the aspect ratio doesn't match the screen, and
+  switching between camera/synthetic modes crossfades via
+  `AnimatedSwitcher` instead of a hard cut.
 
 ## Known limitations / simplified in v1
 
@@ -89,13 +106,26 @@ architecture doc's feature list is fully implemented.
    phone app's saved home/work addresses). Full turn-by-turn rendered on
    the car's own screen (`NavigationTemplate`) is still not implemented.
 
-7. **Concurrent camera streaming + recording** — `LiveDrivingScreen` both
-   streams frames to ML Kit and records video on the same `CameraController`.
-   This is supported by the `camera` plugin on most modern devices but
-   should be tested on your actual target device range before shipping —
-   some older devices/OEM camera HALs handle concurrent streaming+recording
-   poorly. If you hit issues, fall back to two `CameraController`s at lower
-   resolution, or drop the recording resolution while AI is active.
+7. **Concurrent camera streaming + recording — FIXED, was a real bug.**
+   `LiveDrivingScreen` originally called `controller.startImageStream()`
+   for AI frames *and* a separate plain `controller.startVideoRecording()`
+   for the dashcam, on the same `CameraController`. That combination isn't
+   supported by the `camera` plugin — it doesn't throw, but frame delivery
+   to `startImageStream`'s callback silently stops once recording starts.
+   Symptom in the field: the app runs fine, dashcam records fine, but no
+   collision/lane-drift/risk badges ever trigger, because the AI pipeline
+   never receives another frame after recording begins.
+
+   Fixed by using `CameraController.startVideoRecording(onAvailable:
+   callback)` instead — the plugin's own supported path for simultaneous
+   recording + frame streaming (it routes to `startVideoCapturing`
+   internally). `DashcamRecorderService.startLoopRecording` now takes an
+   optional `onFrame` parameter and threads it through every
+   start/stop/restart of recording (initial start, segment rotation,
+   resuming after a saved clip) so frame delivery survives all of those.
+   `CameraManager.startRoadCamera` no longer starts an image stream itself
+   — screens that need AI frames from the road camera must go through the
+   recorder's `onFrame`, not a separate `startImageStream` call.
 
 ## Suggested next milestones
 
