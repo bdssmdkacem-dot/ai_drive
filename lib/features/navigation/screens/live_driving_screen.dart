@@ -20,14 +20,12 @@ import '../widgets/tesla_visualization_view.dart';
 
 enum _ViewMode { camera, synthetic }
 
-/// This screen implements the full AI pipeline described in the
-/// architecture doc:
-/// Camera -> Frame Capture -> Preprocessing -> Object Detection ->
-/// Object Tracking -> Distance/Closeness -> Collision Prediction ->
-/// Risk Assessment -> Voice Warning -> UI Update.
+/// Live driving camera with a real-time camera preview, bounded AI frame
+/// processing, camera controls, risk HUD and the optional 3D visualization.
 ///
-/// It also tracks real trip stats via GPS and offers a synthetic Tesla-style
-/// visualization as an alternative to the raw camera preview.
+/// Camera preview and AI inference are intentionally decoupled: the preview
+/// remains smooth while inference drops frames when the previous inference is
+/// still running.
 class LiveDrivingScreen extends StatefulWidget {
   const LiveDrivingScreen({super.key});
 
@@ -35,7 +33,8 @@ class LiveDrivingScreen extends StatefulWidget {
   State<LiveDrivingScreen> createState() => _LiveDrivingScreenState();
 }
 
-class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
+class _LiveDrivingScreenState extends State<LiveDrivingScreen>
+    with WidgetsBindingObserver {
   final _objectDetection = ObjectDetectionService();
   final _collisionPrediction = CollisionPredictionService();
   final _laneDetection = LaneDetectionService();
@@ -50,53 +49,102 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
   List<TrackedObject> _lastTracked = const [];
   double? _speedKmh;
   int? _tripId;
+
   bool _busy = false;
+  bool _startingCamera = false;
+  String? _cameraError;
   int _frameCounter = 0;
-  DateTime? _lastWarningSpokenAt;
-  DateTime? _lastLaneWarningSpokenAt;
+  int _processedFrames = 0;
+  int _droppedFrames = 0;
+  DateTime? _lastInferenceAt;
+  Duration _lastInferenceLatency = Duration.zero;
+
+  double _zoom = 1.0;
+  double _maxZoom = 1.0;
+  bool _focusLocked = false;
   _ViewMode _viewMode = _ViewMode.camera;
 
+  DateTime? _lastWarningSpokenAt;
+  DateTime? _lastLaneWarningSpokenAt;
   StreamSubscription<double>? _speedSub;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _start();
   }
 
   Future<void> _start() async {
-    await _voice.init();
-    _tripId = await _tripRepo.startTrip();
+    try {
+      await _voice.init();
+      _tripId = await _tripRepo.startTrip();
 
-    final gpsStarted = await _gps.start();
-    if (gpsStarted) {
-      _speedSub = _gps.speedKmhStream.listen((kmh) {
-        if (mounted) setState(() => _speedKmh = kmh);
-      });
+      final gpsStarted = await _gps.start();
+      if (gpsStarted) {
+        _speedSub = _gps.speedKmhStream.listen((kmh) {
+          if (mounted) setState(() => _speedKmh = kmh);
+        });
+      }
+
+      await _startRoadCamera();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _cameraError = 'Camera could not start: $e');
+      }
     }
+  }
 
-    final controller = await CameraManager.instance.startRoadCamera();
-    _recorder = DashcamRecorderService(controller);
-    // Frame delivery for the AI pipeline happens through the recorder's
-    // onFrame here — NOT a separate controller.startImageStream() call —
-    // because startVideoRecording(onAvailable:) is the only combination
-    // the camera plugin supports for simultaneous recording + streaming
-    // on one controller. See DashcamRecorderService's doc comment.
-    await _recorder!.startLoopRecording(onFrame: _onFrame);
+  Future<void> _startRoadCamera() async {
+    if (_startingCamera) return;
+    _startingCamera = true;
 
-    if (mounted) setState(() => _controller = controller);
+    try {
+      final controller = await CameraManager.instance.startRoadCamera(
+        resolution: ResolutionPreset.high,
+      );
+
+      final maxZoom = await controller.getMaxZoomLevel();
+      _recorder = DashcamRecorderService(controller);
+
+      // The recorder owns the camera stream so recording and AI frame
+      // delivery share one controller. _onFrame applies back-pressure.
+      await _recorder!.startLoopRecording(onFrame: _onFrame);
+
+      if (!mounted) return;
+      setState(() {
+        _controller = controller;
+        _maxZoom = maxZoom.clamp(1.0, 8.0);
+        _zoom = 1.0;
+        _cameraError = null;
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _cameraError = 'Camera initialization failed: $e');
+      }
+    } finally {
+      _startingCamera = false;
+    }
   }
 
   Future<void> _onFrame(CameraImage image) async {
     _frameCounter++;
+
+    // Keep the preview/recording path responsive. Inference is intentionally
+    // sampled rather than processing every camera frame.
     if (_frameCounter % 2 != 0) return;
-    if (_busy) return;
+    if (_busy) {
+      _droppedFrames++;
+      return;
+    }
+
     _busy = true;
+    final startedAt = DateTime.now();
 
     try {
       final controller = _controller;
-      if (controller == null) return;
+      if (controller == null || !controller.value.isInitialized) return;
 
       final inputImage = CameraImageConverter.toInputImage(
         image,
@@ -119,6 +167,11 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
         bytesPerRow: image.planes.first.bytesPerRow,
       );
 
+      final latency = DateTime.now().difference(startedAt);
+      _processedFrames++;
+      _lastInferenceAt = DateTime.now();
+      _lastInferenceLatency = latency;
+
       if (mounted) {
         setState(() {
           _lastRisk = risk;
@@ -136,8 +189,52 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
           lanePosition == LanePosition.driftingRight) {
         await _handleLaneDrift(lanePosition);
       }
+    } catch (e) {
+      debugPrint('AI frame processing failed: $e');
     } finally {
       _busy = false;
+    }
+  }
+
+  Future<void> _focusAt(Offset localPosition, Size size) async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    final point = Offset(
+      (localPosition.dx / size.width).clamp(0.0, 1.0),
+      (localPosition.dy / size.height).clamp(0.0, 1.0),
+    );
+
+    try {
+      await controller.setFocusPoint(point);
+      await controller.setExposurePoint(point);
+      if (mounted) setState(() => _focusLocked = true);
+    } catch (e) {
+      debugPrint('Camera focus control unavailable: $e');
+    }
+  }
+
+  Future<void> _resetFocus() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    try {
+      await controller.setFocusPoint(null);
+      await controller.setExposurePoint(null);
+    } catch (_) {
+      // Some camera devices do not support clearing focus/exposure points.
+    }
+    if (mounted) setState(() => _focusLocked = false);
+  }
+
+  Future<void> _setZoom(double value) async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    final next = value.clamp(1.0, _maxZoom);
+    try {
+      await controller.setZoomLevel(next);
+      if (mounted) setState(() => _zoom = next);
+    } catch (e) {
+      debugPrint('Camera zoom unavailable: $e');
     }
   }
 
@@ -178,7 +275,18 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // CameraController is owned by CameraManager/recorder. Do not dispose it
+    // from the lifecycle callback while recording; the recorder can recover
+    // the stream when the app returns to the foreground.
+    if (state == AppLifecycleState.resumed && mounted && _cameraError != null) {
+      unawaited(_startRoadCamera());
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     WakelockPlus.disable();
     _speedSub?.cancel();
     _gps.stop();
@@ -186,6 +294,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
     _recorder?.stop();
     _objectDetection.dispose();
     CameraManager.instance.stopRoadCamera();
+
     if (_tripId != null) {
       _tripRepo.endTrip(
         _tripId!,
@@ -206,26 +315,30 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
         speedKmh: _speedKmh,
       );
     }
+
     if (controller != null && controller.value.isInitialized) {
-      // Fill the screen without distorting the image in either
-      // orientation: the camera's native aspect ratio rarely matches the
-      // screen's, so a bare CameraPreview stretches noticeably when you
-      // rotate the phone. This crops to fill instead (letterbox-free),
-      // which is the standard approach for full-screen camera UIs.
       return LayoutBuilder(
         builder: (context, constraints) {
-          final screenAspect = constraints.maxWidth / constraints.maxHeight;
-          final cameraAspect = controller.value.aspectRatio;
-          final scale = screenAspect < cameraAspect
-              ? constraints.maxHeight / (constraints.maxWidth / cameraAspect)
-              : constraints.maxWidth / (constraints.maxHeight * cameraAspect);
-          return ClipRect(
-            child: Transform.scale(
-              scale: scale,
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: cameraAspect,
-                  child: CameraPreview(controller),
+          final size = Size(constraints.maxWidth, constraints.maxHeight);
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onDoubleTap: _resetFocus,
+            onTapUp: (details) => _focusAt(details.localPosition, size),
+            onScaleUpdate: (details) {
+              if (details.scale != 1.0) {
+                unawaited(_setZoom(_zoom * details.scale));
+              }
+            },
+            child: ClipRect(
+              child: SizedBox.expand(
+                child: FittedBox(
+                  fit: BoxFit.cover,
+                  clipBehavior: Clip.hardEdge,
+                  child: SizedBox(
+                    width: constraints.maxWidth,
+                    height: constraints.maxWidth / controller.value.aspectRatio,
+                    child: CameraPreview(controller),
+                  ),
                 ),
               ),
             ),
@@ -233,39 +346,79 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
         },
       );
     }
-    return const Center(child: CircularProgressIndicator(color: AppTheme.primary));
+
+    if (_cameraError != null) {
+      return _CameraErrorView(
+        message: _cameraError!,
+        onRetry: _startRoadCamera,
+      );
+    }
+
+    return const Center(
+      child: CircularProgressIndicator(color: AppTheme.primary),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
+    final inferenceFps = _processedFrames == 0 || _lastInferenceAt == null
+        ? 0
+        : (_lastInferenceLatency.inMilliseconds > 0
+              ? (1000 / _lastInferenceLatency.inMilliseconds).clamp(0, 60)
+              : 0);
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
           AnimatedSwitcher(
-            duration: const Duration(milliseconds: 400),
+            duration: const Duration(milliseconds: 250),
             child: KeyedSubtree(
               key: ValueKey(_viewMode),
               child: _buildMainView(controller),
             ),
           ),
+          if (_viewMode == _ViewMode.camera && controller?.value.isInitialized == true)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: 100,
+              child: IgnorePointer(
+                child: Row(
+                  children: [
+                    _CameraStatusChip(
+                      icon: Icons.memory,
+                      text: '${_lastTracked.length} objects',
+                    ),
+                    const SizedBox(width: 6),
+                    _CameraStatusChip(
+                      icon: Icons.speed,
+                      text: '${_lastInferenceLatency.inMilliseconds} ms',
+                    ),
+                    const Spacer(),
+                    _CameraStatusChip(
+                      icon: _focusLocked ? Icons.lock : Icons.center_focus_strong,
+                      text: _focusLocked ? 'FOCUS' : 'AUTO',
+                    ),
+                  ],
+                ),
+              ),
+            ),
           Positioned(
-            top: 16,
-            left: 16,
-            right: 16,
+            top: 12,
+            left: 12,
+            right: 12,
             child: SafeArea(
               child: Row(
                 children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                  _GlassButton(
+                    icon: Icons.arrow_back,
                     onPressed: () => Navigator.of(context).maybePop(),
                   ),
-                  if (_speedKmh != null) ...[
-                    const SizedBox(width: 4),
-                    _SpeedBadge(speedKmh: _speedKmh!),
-                  ],
+                  const SizedBox(width: 8),
+                  if (_speedKmh != null) _SpeedBadge(speedKmh: _speedKmh!),
                   const Spacer(),
                   _LaneBadge(position: _lastLanePosition),
                   const SizedBox(width: 8),
@@ -274,12 +427,45 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
               ),
             ),
           ),
+          if (_viewMode == _ViewMode.camera)
+            Positioned(
+              right: 14,
+              top: 110,
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    _GlassButton(
+                      icon: Icons.add,
+                      onPressed: () => _setZoom(_zoom + 0.25),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '${_zoom.toStringAsFixed(1)}x',
+                        style: const TextStyle(color: Colors.white, fontSize: 11),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    _GlassButton(
+                      icon: Icons.remove,
+                      onPressed: () => _setZoom(_zoom - 0.25),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           Positioned(
-            bottom: 24,
-            right: 20,
-            child: FloatingActionButton.small(
-              heroTag: 'view-mode-fab',
-              backgroundColor: AppTheme.surface,
+            bottom: 20,
+            right: 16,
+            child: _GlassButton(
+              icon: _viewMode == _ViewMode.camera
+                  ? Icons.threed_rotation
+                  : Icons.videocam,
               onPressed: () {
                 setState(() {
                   _viewMode = _viewMode == _ViewMode.camera
@@ -287,18 +473,15 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
                       : _ViewMode.camera;
                 });
               },
-              child: Icon(
-                _viewMode == _ViewMode.camera ? Icons.threed_rotation : Icons.videocam,
-                color: AppTheme.primary,
-              ),
             ),
           ),
           Positioned(
-            bottom: 24,
+            bottom: 16,
             left: 0,
             right: 0,
             child: Center(
               child: FloatingActionButton(
+                heroTag: 'save-clip',
                 backgroundColor: AppTheme.primary,
                 onPressed: () async {
                   final clip = await _recorder?.saveCurrentClip();
@@ -313,6 +496,99 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _GlassButton extends StatelessWidget {
+  const _GlassButton({required this.icon, required this.onPressed});
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.55),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onPressed,
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Icon(icon, color: Colors.white, size: 21),
+        ),
+      ),
+    );
+  }
+}
+
+class _CameraStatusChip extends StatelessWidget {
+  const _CameraStatusChip({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white70, size: 14),
+          const SizedBox(width: 5),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CameraErrorView extends StatelessWidget {
+  const _CameraErrorView({required this.message, required this.onRetry});
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.no_photography_outlined, color: Colors.white70, size: 56),
+            const SizedBox(height: 16),
+            const Text(
+              'Live camera unavailable',
+              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white60, fontSize: 12),
+            ),
+            const SizedBox(height: 18),
+            ElevatedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry camera'),
+            ),
+          ],
+        ),
       ),
     );
   }
