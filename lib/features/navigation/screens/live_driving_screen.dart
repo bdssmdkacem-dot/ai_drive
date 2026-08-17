@@ -7,7 +7,6 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../core/themes/app_theme.dart';
 import '../../../shared/models/incident.dart';
 import '../../../shared/repositories/trip_repository.dart';
-import '../../../shared/utils/camera_image_converter.dart';
 import '../../ai/models/tracked_object.dart';
 import '../../ai/services/collision_prediction_service.dart';
 import '../../ai/services/road_perception_pipeline.dart';
@@ -20,12 +19,6 @@ import '../widgets/tesla_visualization_view.dart';
 
 enum _ViewMode { camera, synthetic }
 
-/// Live driving now consumes one synchronized perception snapshot per frame:
-/// Camera -> Perception Pipeline -> Risk/Lane state -> Voice + 3D UI.
-///
-/// The screen is intentionally agnostic about the detector implementation.
-/// This makes the detection backend replaceable without coupling the safety
-/// logic or visualization to ML Kit.
 class LiveDrivingScreen extends StatefulWidget {
   const LiveDrivingScreen({super.key});
 
@@ -64,6 +57,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
 
   Future<void> _start() async {
     await _voice.init();
+    await _perception.init();
     _tripId = await _tripRepo.startTrip();
 
     final gpsStarted = await _gps.start();
@@ -89,18 +83,9 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
       final controller = _controller;
       if (controller == null) return;
 
-      final inputImage = CameraImageConverter.toInputImage(
-        image,
-        controller.description,
-        controller.description.sensorOrientation,
-      );
-      if (inputImage == null) return;
-
       final perception = await _perception.processFrame(
         image: image,
-        inputImage: inputImage,
-        frameWidth: image.width,
-        frameHeight: image.height,
+        rotationDegrees: controller.description.sensorOrientation,
       );
       if (perception == null) return;
 
