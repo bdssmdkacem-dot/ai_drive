@@ -8,3 +8,6 @@ linter:
 analyzer:
   exclude:
     - "**/*.g.dart"
+  errors:
+    unused_field: ignore
+    unused_local_variable: ignore
