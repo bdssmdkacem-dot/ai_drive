@@ -10,24 +10,22 @@ import '../../../shared/repositories/trip_repository.dart';
 import '../../../shared/utils/camera_image_converter.dart';
 import '../../ai/models/tracked_object.dart';
 import '../../ai/services/collision_prediction_service.dart';
+import '../../ai/services/road_perception_pipeline.dart';
 import '../../camera/services/camera_manager.dart';
 import '../../dashcam/services/dashcam_recorder_service.dart';
 import '../../lane_detection/services/lane_detection_service.dart';
-import '../../object_detection/services/object_detection_service.dart';
 import '../../voice/services/voice_assistant_service.dart';
 import '../services/gps_service.dart';
 import '../widgets/tesla_visualization_view.dart';
 
 enum _ViewMode { camera, synthetic }
 
-/// This screen implements the full AI pipeline described in the
-/// architecture doc:
-/// Camera -> Frame Capture -> Preprocessing -> Object Detection ->
-/// Object Tracking -> Distance/Closeness -> Collision Prediction ->
-/// Risk Assessment -> Voice Warning -> UI Update.
+/// Live driving now consumes one synchronized perception snapshot per frame:
+/// Camera -> Perception Pipeline -> Risk/Lane state -> Voice + 3D UI.
 ///
-/// It also tracks real trip stats via GPS and offers a synthetic Tesla-style
-/// visualization as an alternative to the raw camera preview.
+/// The screen is intentionally agnostic about the detector implementation.
+/// This makes the detection backend replaceable without coupling the safety
+/// logic or visualization to ML Kit.
 class LiveDrivingScreen extends StatefulWidget {
   const LiveDrivingScreen({super.key});
 
@@ -36,9 +34,7 @@ class LiveDrivingScreen extends StatefulWidget {
 }
 
 class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
-  final _objectDetection = ObjectDetectionService();
-  final _collisionPrediction = CollisionPredictionService();
-  final _laneDetection = LaneDetectionService();
+  final _perception = RoadPerceptionPipeline();
   final _voice = VoiceAssistantService();
   final _tripRepo = TripRepository();
   final _gps = GpsService();
@@ -47,6 +43,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
   DashcamRecorderService? _recorder;
   RiskAssessment? _lastRisk;
   LanePosition _lastLanePosition = LanePosition.unknown;
+  LaneReading? _lastLaneReading;
   List<TrackedObject> _lastTracked = const [];
   double? _speedKmh;
   int? _tripId;
@@ -78,11 +75,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
 
     final controller = await CameraManager.instance.startRoadCamera();
     _recorder = DashcamRecorderService(controller);
-    // Frame delivery for the AI pipeline happens through the recorder's
-    // onFrame here — NOT a separate controller.startImageStream() call —
-    // because startVideoRecording(onAvailable:) is the only combination
-    // the camera plugin supports for simultaneous recording + streaming
-    // on one controller. See DashcamRecorderService's doc comment.
     await _recorder!.startLoopRecording(onFrame: _onFrame);
 
     if (mounted) setState(() => _controller = controller);
@@ -90,8 +82,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
 
   Future<void> _onFrame(CameraImage image) async {
     _frameCounter++;
-    if (_frameCounter % 2 != 0) return;
-    if (_busy) return;
+    if (_frameCounter % 2 != 0 || _busy) return;
     _busy = true;
 
     try {
@@ -105,36 +96,32 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
       );
       if (inputImage == null) return;
 
-      final tracked = await _objectDetection.processFrame(
-        inputImage,
-        image.width,
-        image.height,
+      final perception = await _perception.processFrame(
+        image: image,
+        inputImage: inputImage,
+        frameWidth: image.width,
+        frameHeight: image.height,
       );
-      final risk = _collisionPrediction.assess(tracked);
-
-      final lanePosition = _laneDetection.evaluate(
-        yPlane: image.planes.first.bytes,
-        width: image.width,
-        height: image.height,
-        bytesPerRow: image.planes.first.bytesPerRow,
-      );
+      if (perception == null) return;
 
       if (mounted) {
         setState(() {
-          _lastRisk = risk;
-          _lastLanePosition = lanePosition;
-          _lastTracked = tracked;
+          _lastRisk = perception.risk;
+          _lastLanePosition = perception.lanePosition;
+          _lastLaneReading = perception.laneReading;
+          _lastTracked = perception.trackedObjects;
         });
       }
 
+      final risk = perception.risk;
       if (risk != null &&
           (risk.level == RiskLevel.warning || risk.level == RiskLevel.danger)) {
         await _handleRisk(risk);
       }
 
-      if (lanePosition == LanePosition.driftingLeft ||
-          lanePosition == LanePosition.driftingRight) {
-        await _handleLaneDrift(lanePosition);
+      if (perception.lanePosition == LanePosition.driftingLeft ||
+          perception.lanePosition == LanePosition.driftingRight) {
+        await _handleLaneDrift(perception.lanePosition);
       }
     } finally {
       _busy = false;
@@ -184,7 +171,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
     _gps.stop();
     _gps.dispose();
     _recorder?.stop();
-    _objectDetection.dispose();
+    _perception.dispose();
     CameraManager.instance.stopRoadCamera();
     if (_tripId != null) {
       _tripRepo.endTrip(
@@ -202,16 +189,11 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen> {
       return TeslaVisualizationView(
         trackedObjects: _lastTracked,
         risk: _lastRisk,
-        laneReading: _laneDetection.lastReading,
+        laneReading: _lastLaneReading,
         speedKmh: _speedKmh,
       );
     }
     if (controller != null && controller.value.isInitialized) {
-      // Fill the screen without distorting the image in either
-      // orientation: the camera's native aspect ratio rarely matches the
-      // screen's, so a bare CameraPreview stretches noticeably when you
-      // rotate the phone. This crops to fill instead (letterbox-free),
-      // which is the standard approach for full-screen camera UIs.
       return LayoutBuilder(
         builder: (context, constraints) {
           final screenAspect = constraints.maxWidth / constraints.maxHeight;
@@ -332,11 +314,7 @@ class _SpeedBadge extends StatelessWidget {
       ),
       child: Text(
         '${speedKmh.round()} km/h',
-        style: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-          fontSize: 12,
-        ),
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
       ),
     );
   }
@@ -367,10 +345,7 @@ class _LaneBadge extends StatelessWidget {
         children: [
           Icon(icon, color: color, size: 16),
           const SizedBox(width: 6),
-          Text(
-            label,
-            style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
-          ),
+          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)),
         ],
       ),
     );
@@ -393,17 +368,10 @@ class _RiskBadge extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.9),
-        borderRadius: BorderRadius.circular(24),
-      ),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.9), borderRadius: BorderRadius.circular(24)),
       child: Text(
         label,
-        style: const TextStyle(
-          color: Colors.black,
-          fontWeight: FontWeight.bold,
-          letterSpacing: 0.5,
-        ),
+        style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, letterSpacing: 0.5),
       ),
     );
   }
