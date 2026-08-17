@@ -10,12 +10,6 @@ import '../../lane_detection/services/lane_detection_service.dart';
 /// Real-time 3D road-scene layer built with a lightweight software 3D
 /// projection. It renders a road plane, lane geometry, an ego vehicle and
 /// detected objects as perspective-projected cuboids.
-///
-/// This deliberately avoids a heavy 3D engine: the ADAS scene is generated
-/// from the perception pipeline's normalized coordinates and relative depth
-/// proxy, so it stays fast on Android and can be drawn directly above the
-/// driving UI. It is a true 3D coordinate/projection layer, not a collection
-/// of flat screen-space rectangles.
 class TeslaVisualizationView extends StatefulWidget {
   const TeslaVisualizationView({
     super.key,
@@ -220,7 +214,6 @@ class _RoadScene3DPainter extends CustomPainter {
     _drawRoad(canvas, size, project);
     _drawLaneGeometry(canvas, size, project);
 
-    // Draw far objects first so the nearer cuboids naturally overlap them.
     final sorted = [...objects]..sort((a, b) => b.depth.compareTo(a.depth));
     for (final object in sorted) {
       _drawObject(canvas, size, project, object);
@@ -280,12 +273,7 @@ class _RoadScene3DPainter extends CustomPainter {
     }
   }
 
-  void _drawObject(
-    Canvas canvas,
-    Size size,
-    Offset Function(_Vec3) project,
-    _SceneObject object,
-  ) {
+  void _drawObject(Canvas canvas, Size size, Offset Function(_Vec3) project, _SceneObject object) {
     final z = 4.0 + (1.0 - object.depth) * 42.0;
     final x = object.x * z * 0.72;
     final isRisk = risk?.object.trackingId == object.id &&
@@ -348,10 +336,10 @@ class _RoadScene3DPainter extends CustomPainter {
     const x = 0.0;
     const width = 1.65;
     const height = 0.62;
-    final p0 = project(const _Vec3(x - width / 2, 0, z));
-    final p1 = project(const _Vec3(x + width / 2, 0, z));
-    final p2 = project(const _Vec3(x + width / 2, height, z));
-    final p3 = project(const _Vec3(x - width / 2, height, z));
+    final p0 = project(_Vec3(x - width / 2, 0, z));
+    final p1 = project(_Vec3(x + width / 2, 0, z));
+    final p2 = project(_Vec3(x + width / 2, height, z));
+    final p3 = project(_Vec3(x - width / 2, height, z));
 
     final car = Path()
       ..moveTo(p0.dx, p0.dy)
