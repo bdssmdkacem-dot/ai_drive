@@ -11,8 +11,7 @@ import '../../voice/services/voice_assistant_service.dart';
 class NavigationScreen extends StatefulWidget {
   const NavigationScreen({super.key, this.embedded = false});
 
-  /// When true, this widget is shown as a tab inside [DashboardScreen] and
-  /// should not push its own Scaffold/AppBar chrome expectations.
+  /// When true, this widget is shown as a tab inside [DashboardScreen].
   final bool embedded;
 
   @override
@@ -20,7 +19,10 @@ class NavigationScreen extends StatefulWidget {
 }
 
 class _NavigationScreenState extends State<NavigationScreen> {
+  static const _fallbackLocation = LatLng(33.5731, -7.5898); // Casablanca
+
   LatLng? _current;
+  GoogleMapController? _mapController;
   final _voice = VoiceAssistantService();
 
   @override
@@ -30,18 +32,32 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 
   Future<void> _locate() async {
-    final permission = await Geolocator.checkPermission();
+    var permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
-      await Geolocator.requestPermission();
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        return;
+      }
     }
+
     try {
       final pos = await Geolocator.getCurrentPosition();
-      if (mounted) {
-        setState(() => _current = LatLng(pos.latitude, pos.longitude));
+      final location = LatLng(pos.latitude, pos.longitude);
+
+      if (!mounted) return;
+      setState(() => _current = location);
+
+      final controller = _mapController;
+      if (controller != null) {
+        await controller.animateCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(target: location, zoom: 15),
+          ),
+        );
       }
     } catch (_) {
-      // Location unavailable (emulator / permission denied) — map still
-      // renders with a default camera position.
+      // The map remains usable at the Morocco fallback location.
     }
   }
 
@@ -89,6 +105,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       await _voice.speak('لم يتم تعيين عنوان $spokenLabel بعد. أضفه من الإعدادات');
       return;
     }
+
     await _voice.speak('جارٍ التوجه إلى $spokenLabel');
     await _launchMapSearch(address);
   }
@@ -101,17 +118,36 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 
   @override
+  void dispose() {
+    _mapController?.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final body = Stack(
       children: [
         GoogleMap(
           initialCameraPosition: CameraPosition(
-            target: _current ?? const LatLng(24.7136, 46.6753), // Riyadh fallback
-            zoom: 15,
+            target: _current ?? _fallbackLocation,
+            zoom: 13,
           ),
+          onMapCreated: (controller) {
+            _mapController = controller;
+            final location = _current;
+            if (location != null) {
+              controller.animateCamera(
+                CameraUpdate.newCameraPosition(
+                  CameraPosition(target: location, zoom: 15),
+                ),
+              );
+            }
+          },
           myLocationEnabled: true,
           myLocationButtonEnabled: true,
           zoomControlsEnabled: false,
+          compassEnabled: true,
+          mapToolbarEnabled: false,
         ),
         Positioned(
           right: 16,

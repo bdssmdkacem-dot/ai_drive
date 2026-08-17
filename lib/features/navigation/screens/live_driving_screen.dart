@@ -16,16 +16,13 @@ import '../../lane_detection/services/lane_detection_service.dart';
 import '../../object_detection/services/object_detection_service.dart';
 import '../../voice/services/voice_assistant_service.dart';
 import '../services/gps_service.dart';
-import '../widgets/tesla_visualization_view.dart';
 
-enum _ViewMode { camera, synthetic }
-
-/// Live driving camera with a real-time camera preview, bounded AI frame
-/// processing, camera controls, risk HUD and the optional 3D visualization.
+/// Live driving view.
 ///
-/// Camera preview and AI inference are intentionally decoupled: the preview
-/// remains smooth while inference drops frames when the previous inference is
-/// still running.
+/// The primary visual is the real camera feed. Camera zoom/focus gestures and
+/// synthetic/3D rendering are deliberately not part of the driving path.
+/// AI inference, GPS and dashcam recording continue independently of the
+/// preview so the camera remains a simple, stable CameraPreview.
 class LiveDrivingScreen extends StatefulWidget {
   const LiveDrivingScreen({super.key});
 
@@ -56,13 +53,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
   int _frameCounter = 0;
   int _processedFrames = 0;
   int _droppedFrames = 0;
-  DateTime? _lastInferenceAt;
   Duration _lastInferenceLatency = Duration.zero;
-
-  double _zoom = 1.0;
-  double _maxZoom = 1.0;
-  bool _focusLocked = false;
-  _ViewMode _viewMode = _ViewMode.camera;
 
   DateTime? _lastWarningSpokenAt;
   DateTime? _lastLaneWarningSpokenAt;
@@ -105,18 +96,15 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
         resolution: ResolutionPreset.high,
       );
 
-      final maxZoom = await controller.getMaxZoomLevel();
       _recorder = DashcamRecorderService(controller);
 
-      // The recorder owns the camera stream so recording and AI frame
-      // delivery share one controller. _onFrame applies back-pressure.
+      // Recording and AI frame delivery share the same controller. Inference
+      // is sampled/back-pressured so it cannot block the camera preview.
       await _recorder!.startLoopRecording(onFrame: _onFrame);
 
       if (!mounted) return;
       setState(() {
         _controller = controller;
-        _maxZoom = maxZoom.clamp(1.0, 8.0);
-        _zoom = 1.0;
         _cameraError = null;
       });
     } catch (e) {
@@ -169,7 +157,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
 
       final latency = DateTime.now().difference(startedAt);
       _processedFrames++;
-      _lastInferenceAt = DateTime.now();
       _lastInferenceLatency = latency;
 
       if (mounted) {
@@ -193,48 +180,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
       debugPrint('AI frame processing failed: $e');
     } finally {
       _busy = false;
-    }
-  }
-
-  Future<void> _focusAt(Offset localPosition, Size size) async {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-
-    final point = Offset(
-      (localPosition.dx / size.width).clamp(0.0, 1.0),
-      (localPosition.dy / size.height).clamp(0.0, 1.0),
-    );
-
-    try {
-      await controller.setFocusPoint(point);
-      await controller.setExposurePoint(point);
-      if (mounted) setState(() => _focusLocked = true);
-    } catch (e) {
-      debugPrint('Camera focus control unavailable: $e');
-    }
-  }
-
-  Future<void> _resetFocus() async {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    try {
-      await controller.setFocusPoint(null);
-      await controller.setExposurePoint(null);
-    } catch (_) {
-      // Some camera devices do not support clearing focus/exposure points.
-    }
-    if (mounted) setState(() => _focusLocked = false);
-  }
-
-  Future<void> _setZoom(double value) async {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    final next = value.clamp(1.0, _maxZoom);
-    try {
-      await controller.setZoomLevel(next);
-      if (mounted) setState(() => _zoom = next);
-    } catch (e) {
-      debugPrint('Camera zoom unavailable: $e');
     }
   }
 
@@ -277,8 +222,7 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // CameraController is owned by CameraManager/recorder. Do not dispose it
-    // from the lifecycle callback while recording; the recorder can recover
-    // the stream when the app returns to the foreground.
+    // from the lifecycle callback while recording.
     if (state == AppLifecycleState.resumed && mounted && _cameraError != null) {
       unawaited(_startRoadCamera());
     }
@@ -306,45 +250,12 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
     super.dispose();
   }
 
-  Widget _buildMainView(CameraController? controller) {
-    if (_viewMode == _ViewMode.synthetic) {
-      return TeslaVisualizationView(
-        trackedObjects: _lastTracked,
-        risk: _lastRisk,
-        laneReading: _laneDetection.lastReading,
-        speedKmh: _speedKmh,
-      );
-    }
-
+  Widget _buildCameraView(CameraController? controller) {
     if (controller != null && controller.value.isInitialized) {
-      return LayoutBuilder(
-        builder: (context, constraints) {
-          final size = Size(constraints.maxWidth, constraints.maxHeight);
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onDoubleTap: _resetFocus,
-            onTapUp: (details) => _focusAt(details.localPosition, size),
-            onScaleUpdate: (details) {
-              if (details.scale != 1.0) {
-                unawaited(_setZoom(_zoom * details.scale));
-              }
-            },
-            child: ClipRect(
-              child: SizedBox.expand(
-                child: FittedBox(
-                  fit: BoxFit.cover,
-                  clipBehavior: Clip.hardEdge,
-                  child: SizedBox(
-                    width: constraints.maxWidth,
-                    height: constraints.maxWidth / controller.value.aspectRatio,
-                    child: CameraPreview(controller),
-                  ),
-                ),
-              ),
-            ),
-          );
-        },
-      );
+      // CameraPreview owns the camera aspect ratio/orientation. We deliberately
+      // do not wrap it in FittedBox/ClipRect or force a portrait/landscape
+      // orientation, preventing artificial crop/zoom.
+      return CameraPreview(controller);
     }
 
     if (_cameraError != null) {
@@ -362,25 +273,14 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
-    final inferenceFps = _processedFrames == 0 || _lastInferenceAt == null
-        ? 0
-        : (_lastInferenceLatency.inMilliseconds > 0
-              ? (1000 / _lastInferenceLatency.inMilliseconds).clamp(0, 60)
-              : 0);
 
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 250),
-            child: KeyedSubtree(
-              key: ValueKey(_viewMode),
-              child: _buildMainView(controller),
-            ),
-          ),
-          if (_viewMode == _ViewMode.camera && controller?.value.isInitialized == true)
+          _buildCameraView(controller),
+          if (controller?.value.isInitialized == true)
             Positioned(
               left: 16,
               right: 16,
@@ -399,8 +299,8 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
                     ),
                     const Spacer(),
                     _CameraStatusChip(
-                      icon: _focusLocked ? Icons.lock : Icons.center_focus_strong,
-                      text: _focusLocked ? 'FOCUS' : 'AUTO',
+                      icon: Icons.auto_awesome,
+                      text: 'AI $_processedFrames',
                     ),
                   ],
                 ),
@@ -425,54 +325,6 @@ class _LiveDrivingScreenState extends State<LiveDrivingScreen>
                   _RiskBadge(risk: _lastRisk),
                 ],
               ),
-            ),
-          ),
-          if (_viewMode == _ViewMode.camera)
-            Positioned(
-              right: 14,
-              top: 110,
-              child: SafeArea(
-                child: Column(
-                  children: [
-                    _GlassButton(
-                      icon: Icons.add,
-                      onPressed: () => _setZoom(_zoom + 0.25),
-                    ),
-                    const SizedBox(height: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        '${_zoom.toStringAsFixed(1)}x',
-                        style: const TextStyle(color: Colors.white, fontSize: 11),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    _GlassButton(
-                      icon: Icons.remove,
-                      onPressed: () => _setZoom(_zoom - 0.25),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          Positioned(
-            bottom: 20,
-            right: 16,
-            child: _GlassButton(
-              icon: _viewMode == _ViewMode.camera
-                  ? Icons.threed_rotation
-                  : Icons.videocam,
-              onPressed: () {
-                setState(() {
-                  _viewMode = _viewMode == _ViewMode.camera
-                      ? _ViewMode.synthetic
-                      : _ViewMode.camera;
-                });
-              },
             ),
           ),
           Positioned(
@@ -569,11 +421,19 @@ class _CameraErrorView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.no_photography_outlined, color: Colors.white70, size: 56),
+            const Icon(
+              Icons.no_photography_outlined,
+              color: Colors.white70,
+              size: 56,
+            ),
             const SizedBox(height: 16),
             const Text(
               'Live camera unavailable',
-              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 8),
             Text(
@@ -625,10 +485,26 @@ class _LaneBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (icon, label, color) = switch (position) {
-      LanePosition.driftingLeft => (Icons.arrow_back, 'DRIFT L', AppTheme.warning),
-      LanePosition.driftingRight => (Icons.arrow_forward, 'DRIFT R', AppTheme.warning),
-      LanePosition.centered => (Icons.vertical_align_center, 'LANE OK', AppTheme.success),
-      LanePosition.unknown => (Icons.help_outline, 'LANE --', AppTheme.textSecondary),
+      LanePosition.driftingLeft => (
+        Icons.arrow_back,
+        'DRIFT L',
+        AppTheme.warning,
+      ),
+      LanePosition.driftingRight => (
+        Icons.arrow_forward,
+        'DRIFT R',
+        AppTheme.warning,
+      ),
+      LanePosition.centered => (
+        Icons.vertical_align_center,
+        'LANE OK',
+        AppTheme.success,
+      ),
+      LanePosition.unknown => (
+        Icons.help_outline,
+        'LANE --',
+        AppTheme.textSecondary,
+      ),
     };
 
     return Container(
@@ -645,7 +521,11 @@ class _LaneBadge extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             label,
-            style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
           ),
         ],
       ),
@@ -663,7 +543,10 @@ class _RiskBadge extends StatelessWidget {
     final (color, label) = switch (level) {
       RiskLevel.danger => (AppTheme.danger, 'DANGER'),
       RiskLevel.warning => (AppTheme.warning, 'WARNING'),
-      RiskLevel.caution => (AppTheme.warning.withValues(alpha: 0.7), 'CAUTION'),
+      RiskLevel.caution => (
+        AppTheme.warning.withValues(alpha: 0.7),
+        'CAUTION',
+      ),
       RiskLevel.none => (AppTheme.success, 'CLEAR'),
     };
 
