@@ -1,9 +1,15 @@
 import 'dart:ui';
 
-enum RoadObjectCategory { vehicle, person, unknown }
+enum RoadObjectCategory {
+  vehicle,
+  person,
+  bicycle,
+  trafficSign,
+  trafficLight,
+  unknown,
+}
 
-/// A detected object on the road, tracked frame-to-frame so we can estimate
-/// how quickly it is growing in the frame (a proxy for closing distance).
+/// A YOLO detection promoted to a frame-to-frame tracked road object.
 class TrackedObject {
   TrackedObject({
     required this.trackingId,
@@ -12,6 +18,8 @@ class TrackedObject {
     required this.frameWidth,
     required this.frameHeight,
     required this.timestamp,
+    this.className = 'unknown',
+    this.confidence = 0,
     this.previousBoxArea,
     this.previousTimestamp,
   });
@@ -22,23 +30,17 @@ class TrackedObject {
   final int frameWidth;
   final int frameHeight;
   final DateTime timestamp;
+  final String className;
+  final double confidence;
 
-  /// Normalized bounding-box area (0..1) from the previous frame, used to
-  /// estimate closing speed. Null on the first sighting.
   final double? previousBoxArea;
   final DateTime? previousTimestamp;
 
   double get normalizedArea =>
       (boundingBox.width * boundingBox.height) / (frameWidth * frameHeight);
 
-  /// Rough distance proxy: bigger box = closer. Not a calibrated metric
-  /// distance — a real implementation needs stereo/depth or a calibrated
-  /// monocular model. Returned as "closeness" 0 (far) .. 1 (very close).
   double get closenessScore => normalizedArea.clamp(0, 1);
 
-  /// Estimated time-to-collision in seconds based on how fast the bounding
-  /// box area is growing between frames. Returns null if we don't have a
-  /// previous sample yet, or if the object isn't approaching.
   double? get estimatedTimeToCollisionSeconds {
     final prevArea = previousBoxArea;
     final prevTime = previousTimestamp;
@@ -48,7 +50,7 @@ class TrackedObject {
     if (dt <= 0) return null;
 
     final growthRate = (normalizedArea - prevArea) / dt;
-    if (growthRate <= 0.0001) return null; // not approaching
+    if (growthRate <= 0.0001) return null;
 
     final remainingArea = 1.0 - normalizedArea;
     if (remainingArea <= 0) return 0;
