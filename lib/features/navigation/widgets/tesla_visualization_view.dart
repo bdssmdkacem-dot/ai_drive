@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../../core/themes/app_theme.dart';
@@ -5,22 +7,15 @@ import '../../ai/models/tracked_object.dart';
 import '../../ai/services/collision_prediction_service.dart';
 import '../../lane_detection/services/lane_detection_service.dart';
 
-/// A stylized, synthetic top-down/perspective driving scene in the style
-/// of Tesla's in-car visualization: the road, lane lines, and nearby
-/// vehicles/pedestrians are drawn as abstract shapes positioned from the
-/// AI pipeline's output, rather than showing the raw camera feed.
+/// Real-time 3D road-scene layer built with a lightweight software 3D
+/// projection. It renders a road plane, lane geometry, an ego vehicle and
+/// detected objects as perspective-projected cuboids.
 ///
-/// Honest scope note (see docs/AI.md): this is a 2.5D pseudo-perspective
-/// illustration built with 2D canvas drawing (`CustomPainter`) — converging
-/// lines, size-scaling-by-distance, and now per-object motion smoothing
-/// create a more fluid 3D impression, but there's still no real 3D scene
-/// graph, camera projection matrix, or depth buffer like Tesla's actual
-/// (Unreal-Engine-based) visualization.
-///
-/// Orientation: the scene's proportions (vanishing point height, road
-/// width) adapt to the widget's actual aspect ratio each frame, so it
-/// reads correctly in both portrait and landscape rather than assuming a
-/// tall phone screen.
+/// This deliberately avoids a heavy 3D engine: the ADAS scene is generated
+/// from the perception pipeline's normalized coordinates and relative depth
+/// proxy, so it stays fast on Android and can be drawn directly above the
+/// driving UI. It is a true 3D coordinate/projection layer, not a collection
+/// of flat screen-space rectangles.
 class TeslaVisualizationView extends StatefulWidget {
   const TeslaVisualizationView({
     super.key,
@@ -42,60 +37,29 @@ class TeslaVisualizationView extends StatefulWidget {
 class _TeslaVisualizationViewState extends State<TeslaVisualizationView>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ticker;
-
-  /// Smoothed (interpolated) render state per tracked object, keyed by
-  /// tracking ID, so objects glide toward their new detected position
-  /// each frame instead of jumping — detections arrive at the AI
-  /// pipeline's cadence (every other camera frame), which is far choppier
-  /// than a 60fps repaint would otherwise look.
-  final Map<int, _SmoothedObject> _smoothed = {};
-
-  /// Accumulated phase for the flowing lane-dash animation, advanced each
-  /// tick proportionally to speed (falls back to a plausible constant if
-  /// no GPS speed is available yet) so the road reads as "moving" under
-  /// the vehicle rather than static.
-  double _dashPhase = 0;
+  final Map<int, _SceneObject> _objects = {};
+  double _roadPhase = 0;
 
   @override
   void initState() {
     super.initState();
     _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
-      ..addListener(_onTick)
+      ..addListener(_tick)
       ..repeat();
   }
 
-  void _onTick() {
-    const smoothingFactor = 0.25; // higher = snappier, lower = floatier
-
-    final presentIds = <int>{};
-    for (final obj in widget.trackedObjects) {
-      presentIds.add(obj.trackingId);
-      final target = _targetFor(obj);
-      final existing = _smoothed[obj.trackingId];
-      _smoothed[obj.trackingId] = existing == null
-          ? target
-          : existing.lerpTo(target, smoothingFactor);
+  void _tick() {
+    final ids = <int>{};
+    for (final object in widget.trackedObjects) {
+      ids.add(object.trackingId);
+      final target = _SceneObject.fromTrackedObject(object);
+      _objects[object.trackingId] = _objects[object.trackingId]?.lerpTo(target, 0.22) ?? target;
     }
-    // Drop objects no longer detected this frame (immediate — a brief
-    // flicker on a dropped detection is preferable to stale ghosts
-    // lingering on screen).
-    _smoothed.removeWhere((id, _) => !presentIds.contains(id));
+    _objects.removeWhere((id, _) => !ids.contains(id));
 
-    final speed = widget.speedKmh ?? 40.0;
-    _dashPhase = (_dashPhase + speed * 0.00025) % 1.0;
-
+    final speed = widget.speedKmh ?? 35.0;
+    _roadPhase = (_roadPhase + speed * 0.00035) % 1.0;
     if (mounted) setState(() {});
-  }
-
-  _SmoothedObject _targetFor(TrackedObject obj) {
-    final boxCenterXNorm = (obj.boundingBox.left + obj.boundingBox.width / 2) / obj.frameWidth;
-    final depthT = (1.0 - obj.closenessScore).clamp(0.05, 0.95);
-    return _SmoothedObject(
-      trackingId: obj.trackingId,
-      lateralNorm: boxCenterXNorm,
-      depthT: depthT,
-      category: obj.category,
-    );
   }
 
   @override
@@ -108,21 +72,24 @@ class _TeslaVisualizationViewState extends State<TeslaVisualizationView>
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isLandscape = constraints.maxWidth > constraints.maxHeight;
         return Stack(
           children: [
             Positioned.fill(
               child: CustomPaint(
-                painter: _ScenePainter(
-                  smoothedObjects: _smoothed.values.toList(growable: false),
+                painter: _RoadScene3DPainter(
+                  objects: _objects.values.toList(growable: false),
                   risk: widget.risk,
                   laneReading: widget.laneReading,
-                  dashPhase: _dashPhase,
-                  isLandscape: isLandscape,
+                  roadPhase: _roadPhase,
                 ),
               ),
             ),
-            if (widget.speedKmh != null) _SpeedReadout(speedKmh: widget.speedKmh!, isLandscape: isLandscape),
+            if (widget.speedKmh != null)
+              Positioned(
+                top: 20,
+                right: 20,
+                child: _SpeedReadout(speedKmh: widget.speedKmh!),
+              ),
           ],
         );
       },
@@ -131,240 +98,295 @@ class _TeslaVisualizationViewState extends State<TeslaVisualizationView>
 }
 
 class _SpeedReadout extends StatelessWidget {
-  const _SpeedReadout({required this.speedKmh, required this.isLandscape});
+  const _SpeedReadout({required this.speedKmh});
   final double speedKmh;
-  final bool isLandscape;
 
   @override
   Widget build(BuildContext context) {
-    final content = Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          speedKmh.round().toString(),
-          style: const TextStyle(color: Colors.white, fontSize: 48, fontWeight: FontWeight.w200),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppTheme.surface.withValues(alpha: 0.82),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppTheme.primary.withValues(alpha: 0.35)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              speedKmh.round().toString(),
+              style: const TextStyle(color: Colors.white, fontSize: 34, fontWeight: FontWeight.w200),
+            ),
+            const SizedBox(width: 5),
+            const Padding(
+              padding: EdgeInsets.only(bottom: 5),
+              child: Text('km/h', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+            ),
+          ],
         ),
-        const Text('km/h', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
-      ],
+      ),
     );
-
-    // Landscape: Tesla's real center-console display is itself
-    // landscape-oriented, so tucking the speed readout to the side
-    // (rather than centered at the bottom, which would sit awkwardly
-    // wide) matches that layout better and leaves the road scene
-    // unobstructed.
-    if (isLandscape) {
-      return Positioned(
-        top: 0,
-        bottom: 0,
-        right: 24,
-        child: Center(child: content),
-      );
-    }
-    return Positioned(bottom: 24, left: 0, right: 0, child: Center(child: content));
   }
 }
 
-/// Interpolatable render state for one tracked object.
-class _SmoothedObject {
-  const _SmoothedObject({
-    required this.trackingId,
-    required this.lateralNorm,
-    required this.depthT,
+class _SceneObject {
+  const _SceneObject({
+    required this.id,
+    required this.x,
+    required this.depth,
     required this.category,
+    required this.size,
   });
 
-  final int trackingId;
-  final double lateralNorm;
-  final double depthT;
-  final RoadObjectCategory category;
+  factory _SceneObject.fromTrackedObject(TrackedObject object) {
+    final centerX = (object.boundingBox.left + object.boundingBox.width / 2) / object.frameWidth;
+    final depth = object.closenessScore.clamp(0.01, 0.95);
+    final size = object.category == RoadObjectCategory.person ? 0.65 : 1.35;
+    return _SceneObject(
+      id: object.trackingId,
+      x: (centerX - 0.5).clamp(-0.95, 0.95),
+      depth: depth,
+      category: object.category,
+      size: size,
+    );
+  }
 
-  _SmoothedObject lerpTo(_SmoothedObject target, double t) {
-    return _SmoothedObject(
-      trackingId: trackingId,
-      lateralNorm: lateralNorm + (target.lateralNorm - lateralNorm) * t,
-      depthT: depthT + (target.depthT - depthT) * t,
+  final int id;
+  final double x;
+  final double depth;
+  final RoadObjectCategory category;
+  final double size;
+
+  _SceneObject lerpTo(_SceneObject target, double t) {
+    return _SceneObject(
+      id: id,
+      x: x + (target.x - x) * t,
+      depth: depth + (target.depth - depth) * t,
       category: target.category,
+      size: size + (target.size - size) * t,
     );
   }
 }
 
-class _ScenePainter extends CustomPainter {
-  _ScenePainter({
-    required this.smoothedObjects,
+class _Vec3 {
+  const _Vec3(this.x, this.y, this.z);
+  final double x;
+  final double y;
+  final double z;
+}
+
+class _ProjectedBox {
+  const _ProjectedBox(this.points);
+  final List<Offset> points;
+}
+
+class _RoadScene3DPainter extends CustomPainter {
+  _RoadScene3DPainter({
+    required this.objects,
     required this.risk,
     required this.laneReading,
-    required this.dashPhase,
-    required this.isLandscape,
+    required this.roadPhase,
   });
 
-  final List<_SmoothedObject> smoothedObjects;
+  final List<_SceneObject> objects;
   final RiskAssessment? risk;
   final LaneReading? laneReading;
-  final double dashPhase;
-  final bool isLandscape;
+  final double roadPhase;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final bgPaint = Paint()
-      ..shader = LinearGradient(
+    final background = Paint()
+      ..shader = const LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: [AppTheme.background, Color.lerp(AppTheme.background, Colors.black, 0.4)!],
+        colors: [Color(0xFF071018), Color(0xFF020407)],
       ).createShader(Offset.zero & size);
-    canvas.drawRect(Offset.zero & size, bgPaint);
+    canvas.drawRect(Offset.zero & size, background);
 
-    // Landscape has less vertical room to work with, so the vanishing
-    // point sits higher up (smaller fraction) and the road is
-    // proportionally narrower relative to the wider canvas — otherwise
-    // the road reads as a short, squat wedge instead of receding
-    // convincingly into the distance.
-    final vpYFraction = isLandscape ? 0.18 : 0.32;
-    final roadWidthFraction = isLandscape ? 0.55 : 0.9;
+    final focal = math.min(size.width, size.height) * 0.92;
+    final horizon = size.height * 0.28;
+    const cameraY = 1.65;
 
-    final vanishingPoint = Offset(size.width / 2, size.height * vpYFraction);
-    final roadBottomY = size.height * 0.98;
-
-    _drawRoad(canvas, size, vanishingPoint, roadBottomY, roadWidthFraction);
-    _drawLaneLines(canvas, size, vanishingPoint, roadBottomY);
-    _drawEgoVehicle(canvas, size, isLandscape);
-    for (final obj in smoothedObjects) {
-      _drawTrackedObject(canvas, size, vanishingPoint, roadBottomY, obj);
+    Offset project(_Vec3 p) {
+      final z = math.max(p.z, 0.2);
+      return Offset(
+        size.width / 2 + p.x * focal / z,
+        horizon + (cameraY - p.y) * focal / z,
+      );
     }
+
+    _drawRoad(canvas, size, project);
+    _drawLaneGeometry(canvas, size, project);
+
+    // Draw far objects first so the nearer cuboids naturally overlap them.
+    final sorted = [...objects]..sort((a, b) => b.depth.compareTo(a.depth));
+    for (final object in sorted) {
+      _drawObject(canvas, size, project, object);
+    }
+
+    _drawEgoVehicle(canvas, size, project);
+    _drawHud(canvas, size);
   }
 
-  void _drawRoad(Canvas canvas, Size size, Offset vp, double roadBottomY, double roadWidthFraction) {
-    final roadWidthAtBottom = size.width * roadWidthFraction;
-    final path = Path()
-      ..moveTo(vp.dx - 4, vp.dy)
-      ..lineTo(vp.dx + 4, vp.dy)
-      ..lineTo(size.width / 2 + roadWidthAtBottom / 2, roadBottomY)
-      ..lineTo(size.width / 2 - roadWidthAtBottom / 2, roadBottomY)
+  void _drawRoad(Canvas canvas, Size size, Offset Function(_Vec3) project) {
+    final farLeft = project(const _Vec3(-24, 0, 50));
+    final farRight = project(const _Vec3(24, 0, 50));
+    final nearRight = project(const _Vec3(5.8, 0, 3.0));
+    final nearLeft = project(const _Vec3(-5.8, 0, 3.0));
+
+    final road = Path()
+      ..moveTo(farLeft.dx, farLeft.dy)
+      ..lineTo(farRight.dx, farRight.dy)
+      ..lineTo(nearRight.dx, nearRight.dy)
+      ..lineTo(nearLeft.dx, nearLeft.dy)
       ..close();
-    canvas.drawPath(path, Paint()..color = const Color(0xFF1B222B));
+    canvas.drawPath(road, Paint()..color = const Color(0xFF18212A));
+
+    final shoulder = Paint()
+      ..color = AppTheme.primary.withValues(alpha: 0.08)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5;
+    canvas.drawLine(farLeft, nearLeft, shoulder);
+    canvas.drawLine(farRight, nearRight, shoulder);
   }
 
-  void _drawLaneLines(Canvas canvas, Size size, Offset vp, double roadBottomY) {
-    final leftNorm = laneReading?.leftLineX ?? 0.3;
-    final rightNorm = laneReading?.rightLineX ?? 0.7;
+  void _drawLaneGeometry(Canvas canvas, Size size, Offset Function(_Vec3) project) {
+    final leftBottom = (laneReading?.leftLineX ?? 0.30).clamp(0.05, 0.48);
+    final rightBottom = (laneReading?.rightLineX ?? 0.70).clamp(0.52, 0.95);
 
-    final leftBottomX = leftNorm * size.width;
-    final rightBottomX = rightNorm * size.width;
+    final vp = project(const _Vec3(0, 0, 50));
+    final leftNear = Offset(size.width * leftBottom, size.height * 0.96);
+    final rightNear = Offset(size.width * rightBottom, size.height * 0.96);
 
-    final paint = Paint()
-      ..color = laneReading != null
-          ? AppTheme.primary
-          : AppTheme.textSecondary.withValues(alpha: 0.4)
+    final lanePaint = Paint()
+      ..color = laneReading == null
+          ? Colors.white.withValues(alpha: 0.24)
+          : AppTheme.primary.withValues(alpha: 0.88)
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
+    canvas.drawLine(vp, leftNear, lanePaint);
+    canvas.drawLine(vp, rightNear, lanePaint);
 
-    canvas.drawLine(vp, Offset(leftBottomX, roadBottomY), paint);
-    canvas.drawLine(vp, Offset(rightBottomX, roadBottomY), paint);
-
-    // Flowing center dashes: phase-shifted each frame by dashPhase so the
-    // dashes appear to travel from the vanishing point toward the
-    // vehicle, giving a sense of forward motion even though the "road"
-    // itself is a static drawing.
     final dashPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.25)
-      ..strokeWidth = 2;
-    const dashCount = 6;
-    for (int i = 0; i < dashCount; i++) {
-      final t0 = ((i / dashCount) + dashPhase) % 1.0;
-      final t1 = (((i + 0.5) / dashCount) + dashPhase) % 1.0;
-      if (t1 < t0) continue; // skip the wrap-around segment, avoids a stray long dash
-      canvas.drawLine(
-        Offset.lerp(vp, Offset(size.width / 2, roadBottomY), t0)!,
-        Offset.lerp(vp, Offset(size.width / 2, roadBottomY), t1)!,
-        dashPaint,
-      );
+      ..color = Colors.white.withValues(alpha: 0.28)
+      ..strokeWidth = 2.2;
+    for (var i = 0; i < 8; i++) {
+      final z0 = 4.0 + i * 5.0 + roadPhase * 5.0;
+      final z1 = z0 + 2.0;
+      if (z0 > 48) continue;
+      canvas.drawLine(project(_Vec3(0, 0.015, z0)), project(_Vec3(0, 0.015, z1)), dashPaint);
     }
   }
 
-  void _drawEgoVehicle(Canvas canvas, Size size, bool isLandscape) {
-    final cx = size.width / 2;
-    final bottom = size.height * (isLandscape ? 0.9 : 0.94);
-    final w = isLandscape ? 36.0 : 46.0;
-    final h = isLandscape ? 50.0 : 66.0;
-    final rect = RRect.fromRectAndRadius(
-      Rect.fromCenter(center: Offset(cx, bottom - h / 2), width: w, height: h),
-      const Radius.circular(10),
-    );
-    canvas.drawRRect(rect, Paint()..color = AppTheme.primary);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(center: Offset(cx, bottom - h * 0.68), width: w * 0.6, height: h * 0.3),
-        const Radius.circular(6),
-      ),
-      Paint()..color = AppTheme.background.withValues(alpha: 0.6),
-    );
-  }
-
-  void _drawTrackedObject(
+  void _drawObject(
     Canvas canvas,
     Size size,
-    Offset vp,
-    double roadBottomY,
-    _SmoothedObject obj,
+    Offset Function(_Vec3) project,
+    _SceneObject object,
   ) {
-    final depthT = obj.depthT;
-    final screenPos = Offset.lerp(
-      Offset(size.width / 2 + (obj.lateralNorm - 0.5) * size.width * 0.9, roadBottomY),
-      vp,
-      depthT,
-    )!;
-
-    final scale = (1.0 - depthT).clamp(0.15, 1.0);
-    final baseSize = obj.category == RoadObjectCategory.person ? 18.0 : 34.0;
-    final w = baseSize * scale;
-    final h = (obj.category == RoadObjectCategory.person ? 34.0 : 20.0) * scale;
-
-    final isRiskObject = risk?.object.trackingId == obj.trackingId &&
+    final z = 4.0 + (1.0 - object.depth) * 42.0;
+    final x = object.x * z * 0.72;
+    final isRisk = risk?.object.trackingId == object.id &&
         (risk?.level == RiskLevel.warning || risk?.level == RiskLevel.danger);
-    final color = isRiskObject
+    final color = isRisk
         ? (risk!.level == RiskLevel.danger ? AppTheme.danger : AppTheme.warning)
-        : (obj.category == RoadObjectCategory.person ? AppTheme.warning : AppTheme.textSecondary);
+        : object.category == RoadObjectCategory.person
+            ? AppTheme.warning
+            : AppTheme.textSecondary;
 
-    // A soft ground-contact shadow beneath each object reads as a cheap
-    // but effective depth cue — objects "sitting on" the road rather than
-    // floating flat shapes. Drawn flat (unskewed) since it represents
-    // contact with the ground plane, not the object's own geometry.
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset(screenPos.dx, screenPos.dy + h * 0.42), width: w * 0.9, height: h * 0.22),
-      Paint()..color = Colors.black.withValues(alpha: 0.35),
-    );
+    final width = object.size * (0.75 + (1.0 - object.depth) * 0.7);
+    final height = object.category == RoadObjectCategory.person ? object.size * 1.9 : object.size * 0.85;
+    final box = _ProjectedBox([
+      project(_Vec3(x - width / 2, 0.02, z)),
+      project(_Vec3(x + width / 2, 0.02, z)),
+      project(_Vec3(x + width / 2, height, z)),
+      project(_Vec3(x - width / 2, height, z)),
+      project(_Vec3(x - width / 2, 0.02, z + width * 0.8)),
+      project(_Vec3(x + width / 2, 0.02, z + width * 0.8)),
+      project(_Vec3(x + width / 2, height, z + width * 0.8)),
+      project(_Vec3(x - width / 2, height, z + width * 0.8)),
+    ]);
 
-    // Perspective skew: lean the box toward the vanishing point based on
-    // how far off-center it is and how far away it is (depthT). This
-    // mirrors how the lane lines converge and reads as much more
-    // "in-scene" than an axis-aligned rectangle floating over the road —
-    // a cheap trick, but an effective one for a flat 2D canvas.
-    final lateralOffsetNorm = (screenPos.dx - size.width / 2) / (size.width / 2);
-    final skew = -lateralOffsetNorm * 0.22 * depthT;
+    final p = box.points;
+    final front = Path()
+      ..moveTo(p[0].dx, p[0].dy)
+      ..lineTo(p[1].dx, p[1].dy)
+      ..lineTo(p[2].dx, p[2].dy)
+      ..lineTo(p[3].dx, p[3].dy)
+      ..close();
+    final top = Path()
+      ..moveTo(p[3].dx, p[3].dy)
+      ..lineTo(p[2].dx, p[2].dy)
+      ..lineTo(p[6].dx, p[6].dy)
+      ..lineTo(p[7].dx, p[7].dy)
+      ..close();
+    final side = Path()
+      ..moveTo(p[1].dx, p[1].dy)
+      ..lineTo(p[5].dx, p[5].dy)
+      ..lineTo(p[6].dx, p[6].dy)
+      ..lineTo(p[2].dx, p[2].dy)
+      ..close();
 
-    canvas.save();
-    canvas.translate(screenPos.dx, screenPos.dy);
-    canvas.transform(Matrix4.skewX(skew).storage);
-    canvas.translate(-screenPos.dx, -screenPos.dy);
+    canvas.drawPath(front, Paint()..color = color.withValues(alpha: 0.92));
+    canvas.drawPath(top, Paint()..color = color.withValues(alpha: 0.58));
+    canvas.drawPath(side, Paint()..color = color.withValues(alpha: 0.72));
 
-    final rect = Rect.fromCenter(center: screenPos, width: w, height: h);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, Radius.circular(w * 0.2)),
-      Paint()..color = color,
-    );
-
-    if (isRiskObject) {
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(rect.inflate(4), Radius.circular(w * 0.25)),
-        Paint()
-          ..color = color
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
-      );
+    if (isRisk) {
+      final outline = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = risk!.level == RiskLevel.danger ? 3.0 : 2.0;
+      canvas.drawPath(front, outline);
+      canvas.drawCircle(p[3], 5 + (1 - object.depth) * 5, outline);
     }
-    canvas.restore();
+  }
+
+  void _drawEgoVehicle(Canvas canvas, Size size, Offset Function(_Vec3) project) {
+    final z = 2.1;
+    const x = 0.0;
+    const width = 1.65;
+    const height = 0.62;
+    final p0 = project(const _Vec3(x - width / 2, 0, z));
+    final p1 = project(const _Vec3(x + width / 2, 0, z));
+    final p2 = project(const _Vec3(x + width / 2, height, z));
+    final p3 = project(const _Vec3(x - width / 2, height, z));
+
+    final car = Path()
+      ..moveTo(p0.dx, p0.dy)
+      ..lineTo(p1.dx, p1.dy)
+      ..lineTo(p2.dx, p2.dy)
+      ..lineTo(p3.dx, p3.dy)
+      ..close();
+    canvas.drawPath(car, Paint()..color = AppTheme.primary);
+
+    final windshield = Path()
+      ..moveTo(p3.dx + (p2.dx - p3.dx) * 0.16, p3.dy)
+      ..lineTo(p2.dx - (p2.dx - p3.dx) * 0.16, p2.dy)
+      ..lineTo(p2.dx - (p2.dx - p3.dx) * 0.30, p2.dy - 10)
+      ..lineTo(p3.dx + (p2.dx - p3.dx) * 0.30, p3.dy - 10)
+      ..close();
+    canvas.drawPath(windshield, Paint()..color = AppTheme.background.withValues(alpha: 0.85));
+  }
+
+  void _drawHud(Canvas canvas, Size size) {
+    final objectCount = objects.length;
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: '3D PERCEPTION  •  $objectCount OBJECT${objectCount == 1 ? '' : 'S'}',
+        style: TextStyle(
+          color: Colors.white.withValues(alpha: 0.68),
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 1.2,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    textPainter.paint(canvas, Offset(18, size.height - 28));
   }
 
   @override
-  bool shouldRepaint(covariant _ScenePainter oldDelegate) => true; // driven by the ticker each frame
+  bool shouldRepaint(covariant _RoadScene3DPainter oldDelegate) => true;
 }
