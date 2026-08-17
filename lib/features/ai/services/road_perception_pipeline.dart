@@ -1,15 +1,10 @@
 import 'package:camera/camera.dart';
-import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 
 import '../../lane_detection/services/lane_detection_service.dart';
-import '../../object_detection/services/object_detection_service.dart';
+import '../../object_detection/services/yolo_object_detection_service.dart';
 import '../models/tracked_object.dart';
 import 'collision_prediction_service.dart';
 
-/// A single synchronized perception snapshot consumed by driving UI and
-/// safety logic. Keeping detection, lane geometry and collision assessment
-/// together prevents the UI from accidentally mixing results from different
-/// camera frames.
 class PerceptionFrame {
   const PerceptionFrame({
     required this.trackedObjects,
@@ -30,46 +25,41 @@ class PerceptionFrame {
   final int frameHeight;
 }
 
-/// Coordinates the complete road-perception pass for one camera frame.
+/// Unified road-perception pipeline using the real YOLO/LiteRT detector.
 ///
-/// The screen no longer knows which detector/tracker is being used. A future
-/// YOLO/TFLite backend can replace [ObjectDetectionService] without changing
-/// collision prediction, lane processing, recording, voice alerts or the 3D
-/// renderer.
+/// Camera -> YOLO/LiteRT -> temporal tracking -> lane geometry -> collision
+/// prediction -> synchronized PerceptionFrame.
 class RoadPerceptionPipeline {
   RoadPerceptionPipeline({
-    ObjectDetectionService? objectDetection,
+    YoloObjectDetectionService? objectDetection,
     CollisionPredictionService? collisionPrediction,
     LaneDetectionService? laneDetection,
-  })  : _objectDetection = objectDetection ?? ObjectDetectionService(),
-        _collisionPrediction =
-            collisionPrediction ?? CollisionPredictionService(),
+  })  : _objectDetection = objectDetection ?? YoloObjectDetectionService(),
+        _collisionPrediction = collisionPrediction ?? CollisionPredictionService(),
         _laneDetection = laneDetection ?? LaneDetectionService();
 
-  final ObjectDetectionService _objectDetection;
+  final YoloObjectDetectionService _objectDetection;
   final CollisionPredictionService _collisionPrediction;
   final LaneDetectionService _laneDetection;
 
   LaneReading? get lastLaneReading => _laneDetection.lastReading;
 
+  Future<void> init() => _objectDetection.init();
+
   Future<PerceptionFrame?> processFrame({
     required CameraImage image,
-    required InputImage inputImage,
-    required int frameWidth,
-    required int frameHeight,
+    int rotationDegrees = 0,
   }) async {
     final timestamp = DateTime.now();
 
     final results = await Future.wait([
-      _objectDetection.processFrame(inputImage, frameWidth, frameHeight),
-      Future.value(
-        _laneDetection.evaluate(
-          yPlane: image.planes.first.bytes,
-          width: image.width,
-          height: image.height,
-          bytesPerRow: image.planes.first.bytesPerRow,
-        ),
-      ),
+      _objectDetection.processFrame(image, rotationDegrees: rotationDegrees),
+      Future.value(_laneDetection.evaluate(
+        yPlane: image.planes.first.bytes,
+        width: image.width,
+        height: image.height,
+        bytesPerRow: image.planes.first.bytesPerRow,
+      )),
     ]);
 
     final tracked = results[0] as List<TrackedObject>;
@@ -82,8 +72,8 @@ class RoadPerceptionPipeline {
       lanePosition: lanePosition,
       laneReading: _laneDetection.lastReading,
       timestamp: timestamp,
-      frameWidth: frameWidth,
-      frameHeight: frameHeight,
+      frameWidth: image.width,
+      frameHeight: image.height,
     );
   }
 
