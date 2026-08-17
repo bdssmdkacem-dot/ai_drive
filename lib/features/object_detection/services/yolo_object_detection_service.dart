@@ -42,11 +42,12 @@ class YoloObjectDetectionService {
     await init();
 
     final prepared = _prepareFrame(image, rotationDegrees);
-    final result = await _yolo.predict(
+    final rawResult = await _yolo.predict(
       prepared.jpegBytes,
       confidenceThreshold: confidenceThreshold,
       iouThreshold: iouThreshold,
     );
+    final result = YOLODetectionResults.fromMap(rawResult);
 
     final now = DateTime.now();
     final detections = <_Detection>[];
