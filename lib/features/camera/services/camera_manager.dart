@@ -35,13 +35,11 @@ class CameraManager {
 
   /// Initializes the rear (road-facing) camera controller. Does NOT start
   /// an image stream here — if you need AI frames from this camera, they
-  /// must come through [DashcamRecorderService]'s `startLoopRecording`
-  /// (which uses `CameraController.startVideoRecording(onAvailable: ...)`,
-  /// the only combination the `camera` plugin supports for simultaneous
-  /// recording + frame streaming on one controller). Calling
-  /// `startImageStream()` here AND `startVideoRecording()` separately
-  /// elsewhere silently breaks frame delivery once recording starts — see
-  /// docs/AI.md's "Concurrent camera streaming + recording" note.
+  /// must come through [DashcamRecorderService]'s `startLoopRecording`.
+  ///
+  /// The controller is deliberately initialized with the camera's native
+  /// defaults: 1x zoom, continuous/auto focus and auto exposure. No pinch
+  /// zoom, digital crop or orientation lock is applied here.
   Future<CameraController> startRoadCamera({
     ResolutionPreset resolution = ResolutionPreset.high,
   }) async {
@@ -49,14 +47,37 @@ class CameraManager {
     if (desc == null) {
       throw StateError('No rear camera available on this device.');
     }
+
     await stopRoadCamera();
+
     final controller = CameraController(
       desc,
       resolution,
       enableAudio: true,
       imageFormatGroup: ImageFormatGroup.nv21,
     );
+
     await controller.initialize();
+
+    // Always start a fresh road camera at the normal 1x view. These calls are
+    // intentionally best-effort because a particular Android camera may not
+    // expose one of the modes; failure must not prevent the preview itself.
+    try {
+      await controller.setZoomLevel(1.0);
+    } catch (e) {
+      debugPrint('Camera 1x zoom setup unavailable: $e');
+    }
+    try {
+      await controller.setFocusMode(FocusMode.auto);
+    } catch (e) {
+      debugPrint('Camera auto-focus setup unavailable: $e');
+    }
+    try {
+      await controller.setExposureMode(ExposureMode.auto);
+    } catch (e) {
+      debugPrint('Camera auto-exposure setup unavailable: $e');
+    }
+
     roadController = controller;
     return controller;
   }
@@ -78,6 +99,21 @@ class CameraManager {
       imageFormatGroup: ImageFormatGroup.nv21,
     );
     await controller.initialize();
+    try {
+      await controller.setZoomLevel(1.0);
+    } catch (e) {
+      debugPrint('Driver camera 1x zoom setup unavailable: $e');
+    }
+    try {
+      await controller.setFocusMode(FocusMode.auto);
+    } catch (e) {
+      debugPrint('Driver camera auto-focus setup unavailable: $e');
+    }
+    try {
+      await controller.setExposureMode(ExposureMode.auto);
+    } catch (e) {
+      debugPrint('Driver camera auto-exposure setup unavailable: $e');
+    }
     if (onFrame != null) {
       await controller.startImageStream(onFrame);
     }
