@@ -50,8 +50,17 @@ jobs:
         run: flutter --version
 
       - name: Create local.properties
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_RELEASE || vars.MAPS_API_KEY_RELEASE || secrets.MAPS_API_KEY || vars.MAPS_API_KEY }}
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+          if [ -z "$MAPS_API_KEY" ]; then
+            echo "ERROR: Google Maps API key is missing."
+            echo "Set repository Actions variable MAPS_API_KEY_RELEASE or MAPS_API_KEY."
+            exit 1
+          fi
+          printf 'maps.apiKey=%s\n' "$MAPS_API_KEY" >> android/local.properties
+          echo "Google Maps API key configured for Android release build."
 
       - name: Install Dependencies
         run: flutter pub get
@@ -73,10 +82,7 @@ jobs:
           EOF
 
       - name: Build Release App Bundle
-        env:
-          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_RELEASE }}
-        run: |
-          flutter build appbundle --release
+        run: flutter build appbundle --release
 
       - name: Upload Release Bundle
         uses: actions/upload-artifact@v4
