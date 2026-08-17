@@ -78,9 +78,18 @@ jobs:
       - name: Flutter Version
         run: flutter --version
       - name: Create local.properties
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_DEBUG || vars.MAPS_API_KEY_DEBUG || secrets.MAPS_API_KEY || vars.MAPS_API_KEY }}
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
           echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
+          if [ -z "$MAPS_API_KEY" ]; then
+            echo "ERROR: Google Maps API key is missing."
+            echo "Set repository Actions variable MAPS_API_KEY_DEBUG or MAPS_API_KEY."
+            exit 1
+          fi
+          printf 'maps.apiKey=%s\n' "$MAPS_API_KEY" >> android/local.properties
+          echo "Google Maps API key configured for Android build."
       - name: Regenerate Gradle Wrapper
         working-directory: android
         run: gradle wrapper --gradle-version ${{ env.GRADLE_VERSION }} --distribution-type all
@@ -91,19 +100,7 @@ jobs:
         run: flutter pub get
       - name: Generate Isar
         run: dart run build_runner build --delete-conflicting-outputs
-      - name: Validate Google Maps API key
-        env:
-          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_DEBUG || vars.MAPS_API_KEY_DEBUG || secrets.MAPS_API_KEY || vars.MAPS_API_KEY }}
-        run: |
-          if [ -z "$MAPS_API_KEY" ]; then
-            echo "ERROR: Google Maps API key is missing."
-            echo "Set repository Actions variable MAPS_API_KEY_DEBUG (or secret MAPS_API_KEY_DEBUG)."
-            exit 1
-          fi
-          echo "Google Maps API key is configured."
       - name: Build Debug APK
-        env:
-          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY_DEBUG || vars.MAPS_API_KEY_DEBUG || secrets.MAPS_API_KEY || vars.MAPS_API_KEY }}
         run: flutter build apk --debug
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
